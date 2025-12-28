@@ -15,13 +15,13 @@
 - **Streaming**: SSE (Server-Sent Events)
 
 ### Target Rust Architecture (Headless API)
-- **Framework**: Axum (recommended) - async, performant, type-safe
+- **Framework**: Axum - async, performant, type-safe ✅ DECIDED
 - **Database**: SQLx - compile-time checked queries ✅ DECIDED
-- **Authentication**: JWT-based stateless auth with Rust crates ✅ DECIDED
-- **API**: RESTful with OpenAPI documentation ✅ DECIDED
+- **Authentication**: API Key + JWT tokens ✅ DECIDED
+- **Client Communication**: Streaming HTTP ONLY ✅ DECIDED
+- **Backend MCP Servers**: SSE or stdio (protocol translation) ✅ DECIDED
 - **Process Management**: tokio::process for MCP servers ✅ DECIDED
-- **Streaming**: Custom Tokio streams with Axum SSE/WebSocket ✅ DECIDED
-- **Protocol**: Native Rust MCP implementation
+- **Protocol**: Native Rust MCP implementation with translation layer ✅ DECIDED
 
 ## 2. Web Framework Selection
 
@@ -126,48 +126,48 @@ impl Database {
     }
 
     // Repository pattern for clean architecture
-    pub fn users(&self) -> UserRepository {
-        UserRepository::new(self.pool.clone())
+    pub fn api_keys(&self) -> ApiKeyRepository {
+        ApiKeyRepository::new(self.pool.clone())
     }
 
-    pub fn sessions(&self) -> SessionRepository {
-        SessionRepository::new(self.pool.clone())
+    pub fn mcp_servers(&self) -> McpServerRepository {
+        McpServerRepository::new(self.pool.clone())
     }
 }
 
-// Example repository
-pub struct UserRepository {
+// API Key repository for authentication
+pub struct ApiKeyRepository {
     pool: PgPool,
 }
 
-impl UserRepository {
-    pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
-        let user = sqlx::query_as!(
-            User,
-            "SELECT * FROM users WHERE email = $1",
-            email
+impl ApiKeyRepository {
+    pub async fn find_by_key_hash(&self, key_hash: &str) -> Result<Option<ApiKey>> {
+        let api_key = sqlx::query_as!(
+            ApiKey,
+            "SELECT * FROM api_keys WHERE key_hash = $1 AND is_active = true",
+            key_hash
         )
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(user)
+        Ok(api_key)
     }
 
-    pub async fn create(&self, user: CreateUser) -> Result<User> {
-        let user = sqlx::query_as!(
-            User,
+    pub async fn create(&self, name: &str, key_hash: &str) -> Result<ApiKey> {
+        let api_key = sqlx::query_as!(
+            ApiKey,
             r#"
-            INSERT INTO users (email, password_hash, created_at)
-            VALUES ($1, $2, NOW())
+            INSERT INTO api_keys (name, key_hash, is_active, created_at)
+            VALUES ($1, $2, true, NOW())
             RETURNING *
             "#,
-            user.email,
-            user.password_hash
+            name,
+            key_hash
         )
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(user)
+        Ok(api_key)
     }
 }
 ```
@@ -187,8 +187,8 @@ impl UserRepository {
    let mut tx = pool.begin().await?;
 
    // Multiple operations with transaction
-   let user = create_user(&mut tx, data).await?;
-   let session = create_session(&mut tx, user.id).await?;
+   let api_key = create_api_key(&mut tx, name, key_hash).await?;
+   let server_config = create_server_config(&mut tx, api_key.id, config).await?;
 
    tx.commit().await?;
    ```
@@ -213,116 +213,147 @@ impl UserRepository {
 
 ## 4. Authentication Strategy
 
-### Recommended: Headless API Authentication with Rust Crates
+### API Key + JWT Authentication (Simplified)
 
-Since the goal is to provide a **headless API backend** for MetaMCP, we'll use battle-tested Rust crates for a stateless, token-based authentication system.
+**MetaMCP uses a simple API key-based authentication system**. There are NO user accounts, NO OAuth, NO session management - just API keys for client authentication.
 
 #### Authentication Architecture:
 
-1. **JWT-based Authentication** (Stateless)
-   - No server-side sessions needed for headless API
-   - Tokens can be validated without database lookups
-   - Perfect for distributed/scaled deployments
+1. **API Key Management**
+   - API keys are persistent and stored encrypted in database
+   - Each API key has a unique identifier and metadata (name, created_at, last_used)
+   - Keys can be revoked by marking them as inactive
 
-2. **OAuth2/OIDC Support**
-   - Support external identity providers
-   - Maintain compatibility with existing OAuth flows
+2. **JWT Token Generation**
+   - Clients obtain an API key (out of band - e.g., via CLI tool or admin interface)
+   - Clients generate a JWT token based on their API key
+   - JWT tokens are short-lived (15 minutes) for security
+   - Token contains API key ID and expiry time
 
-3. **API Key Authentication**
-   - For service-to-service communication
-   - Long-lived tokens for CI/CD and automation
+3. **No User Persistence**
+   - No user tables, no user registration/login flows
+   - No email, password, or OAuth providers
+   - Pure API key to JWT workflow
 
-#### Implementation with Rust Crates:
+#### Implementation:
 
 ```rust
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use oauth2::{
-    AuthorizationCode,
-    AuthUrl,
-    ClientId,
-    ClientSecret,
-    CsrfToken,
-    PkceCodeChallenge,
-    RedirectUrl,
-    Scope,
-    TokenUrl,
-};
 use axum_extra::headers::authorization::Bearer;
 use tower_http::auth::RequireAuthorizationLayer;
+use chacha20poly1305::{
+    aead::{Aead, KeyInit, OsRng},
+    ChaCha20Poly1305, Nonce,
+};
 
-// JWT Claims structure
+// API Key model (stored in database)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKey {
+    pub id: Uuid,
+    pub name: String,
+    pub key_hash: String,        // Hashed version for lookup
+    pub encrypted_key: Vec<u8>,  // Encrypted actual key
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+// JWT Claims structure (simplified - no user info)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,           // user id
-    pub email: String,
-    pub exp: usize,            // expiry
-    pub iat: usize,            // issued at
-    pub roles: Vec<String>,
-    pub session_id: String,
+    pub sub: String,      // API key ID
+    pub exp: usize,       // expiry
+    pub iat: usize,       // issued at
+    pub jti: String,      // JWT ID for tracking
 }
 
 // Authentication service
 pub struct AuthService {
     jwt_secret: String,
-    jwt_refresh_secret: String,
-    argon2: Argon2<'static>,
-    oauth_client: BasicClient,
+    encryption_key: ChaCha20Poly1305,
+    db: Database,
 }
 
 impl AuthService {
-    // Password hashing with Argon2
-    pub async fn hash_password(&self, password: &str) -> Result<String> {
+    pub fn new(jwt_secret: String, encryption_key: &[u8; 32], db: Database) -> Self {
+        Self {
+            jwt_secret,
+            encryption_key: ChaCha20Poly1305::new(encryption_key.into()),
+            db,
+        }
+    }
+
+    // Generate new API key
+    pub async fn generate_api_key(&self, name: String) -> Result<(String, ApiKey)> {
+        // Generate random API key
+        let raw_key = format!("mcp_{}", Uuid::new_v4().simple());
+
+        // Hash for database lookup
+        let key_hash = self.hash_key(&raw_key)?;
+
+        // Encrypt for storage
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let encrypted_key = self.encryption_key
+            .encrypt(&nonce, raw_key.as_bytes())
+            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+
+        // Store in database
+        let api_key = self.db.api_keys().create(&name, &key_hash, encrypted_key).await?;
+
+        Ok((raw_key, api_key))
+    }
+
+    // Hash API key for database lookup
+    fn hash_key(&self, key: &str) -> Result<String> {
+        let argon2 = Argon2::default();
         let salt = SaltString::generate(&mut OsRng);
-        let hash = self.argon2
-            .hash_password(password.as_bytes(), &salt)?
+        let hash = argon2
+            .hash_password(key.as_bytes(), &salt)?
             .to_string();
         Ok(hash)
     }
 
-    // Verify password
-    pub async fn verify_password(&self, password: &str, hash: &str) -> Result<bool> {
-        let parsed_hash = PasswordHash::new(hash)?;
-        Ok(self.argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+    // Validate API key and generate JWT
+    pub async fn authenticate_with_api_key(&self, api_key: &str) -> Result<String> {
+        // Hash the provided key
+        let key_hash = self.hash_key(api_key)?;
+
+        // Look up in database
+        let stored_key = self.db.api_keys()
+            .find_by_key_hash(&key_hash)
+            .await?
+            .ok_or_else(|| anyhow!("Invalid API key"))?;
+
+        if !stored_key.is_active {
+            return Err(anyhow!("API key is inactive"));
+        }
+
+        // Update last used timestamp
+        self.db.api_keys().update_last_used(stored_key.id).await?;
+
+        // Generate JWT token
+        self.generate_jwt_for_key(stored_key.id).await
     }
 
-    // Generate JWT tokens
-    pub async fn generate_tokens(&self, user_id: &str, email: &str) -> Result<TokenPair> {
+    // Generate JWT token for an API key
+    pub async fn generate_jwt_for_key(&self, key_id: Uuid) -> Result<String> {
         let now = Utc::now();
 
-        // Access token (15 minutes)
-        let access_claims = Claims {
-            sub: user_id.to_string(),
-            email: email.to_string(),
+        let claims = Claims {
+            sub: key_id.to_string(),
             exp: (now + Duration::minutes(15)).timestamp() as usize,
             iat: now.timestamp() as usize,
-            roles: vec!["user".to_string()],
-            session_id: Uuid::new_v4().to_string(),
+            jti: Uuid::new_v4().to_string(),
         };
 
-        let access_token = encode(
+        let token = encode(
             &Header::default(),
-            &access_claims,
+            &claims,
             &EncodingKey::from_secret(self.jwt_secret.as_bytes())
         )?;
 
-        // Refresh token (7 days)
-        let refresh_claims = Claims {
-            sub: user_id.to_string(),
-            email: email.to_string(),
-            exp: (now + Duration::days(7)).timestamp() as usize,
-            iat: now.timestamp() as usize,
-            roles: vec!["refresh".to_string()],
-            session_id: access_claims.session_id.clone(),
-        };
-
-        let refresh_token = encode(
-            &Header::default(),
-            &refresh_claims,
-            &EncodingKey::from_secret(self.jwt_refresh_secret.as_bytes())
-        )?;
-
-        Ok(TokenPair { access_token, refresh_token })
+        Ok(token)
     }
 
     // Validate JWT token
@@ -332,16 +363,33 @@ impl AuthService {
             &DecodingKey::from_secret(self.jwt_secret.as_bytes()),
             &Validation::default()
         )?;
+
+        // Verify API key is still active
+        let key_id = Uuid::parse_str(&token_data.claims.sub)?;
+        let api_key = self.db.api_keys()
+            .find_by_id(key_id)
+            .await?
+            .ok_or_else(|| anyhow!("API key not found"))?;
+
+        if !api_key.is_active {
+            return Err(anyhow!("API key has been revoked"));
+        }
+
         Ok(token_data.claims)
+    }
+
+    // Revoke API key
+    pub async fn revoke_api_key(&self, key_id: Uuid) -> Result<()> {
+        self.db.api_keys().set_inactive(key_id).await
     }
 }
 
-// Axum middleware for authentication
-pub async fn auth_middleware<B>(
+// Axum middleware for JWT authentication
+pub async fn auth_middleware(
     State(auth): State<Arc<AuthService>>,
     TypedHeader(auth_header): TypedHeader<Authorization<Bearer>>,
-    mut request: Request<B>,
-    next: Next<B>,
+    mut request: Request<Body>,
+    next: Next,
 ) -> Result<Response, StatusCode> {
     let token = auth_header.token();
 
@@ -351,72 +399,10 @@ pub async fn auth_middleware<B>(
             request.extensions_mut().insert(claims);
             Ok(next.run(request).await)
         }
-        Err(_) => Err(StatusCode::UNAUTHORIZED),
-    }
-}
-
-// API Key authentication for service-to-service
-pub struct ApiKeyAuth {
-    valid_keys: HashMap<String, ApiKeyMetadata>,
-}
-
-impl ApiKeyAuth {
-    pub async fn validate_api_key(&self, key: &str) -> Result<ApiKeyMetadata> {
-        self.valid_keys
-            .get(key)
-            .cloned()
-            .ok_or_else(|| anyhow!("Invalid API key"))
-    }
-}
-```
-
-#### OAuth2 Implementation:
-
-```rust
-use oauth2::{
-    basic::BasicClient,
-    AuthorizationCode,
-    TokenResponse,
-};
-
-pub struct OAuthService {
-    clients: HashMap<String, BasicClient>,
-}
-
-impl OAuthService {
-    pub fn new() -> Self {
-        let mut clients = HashMap::new();
-
-        // Configure OAuth providers
-        let github_client = BasicClient::new(
-            ClientId::new(env::var("GITHUB_CLIENT_ID")?),
-            Some(ClientSecret::new(env::var("GITHUB_CLIENT_SECRET")?)),
-            AuthUrl::new("https://github.com/login/oauth/authorize")?,
-            Some(TokenUrl::new("https://github.com/login/oauth/access_token")?)
-        )
-        .set_redirect_uri(RedirectUrl::new("http://localhost:12009/oauth/callback")?);
-
-        clients.insert("github".to_string(), github_client);
-
-        Self { clients }
-    }
-
-    pub async fn handle_callback(&self, provider: &str, code: AuthorizationCode) -> Result<User> {
-        let client = self.clients.get(provider)
-            .ok_or_else(|| anyhow!("Unknown provider"))?;
-
-        let token = client
-            .exchange_code(code)
-            .request_async(async_http_client)
-            .await?;
-
-        // Exchange token for user info
-        let user_info = self.fetch_user_info(provider, token.access_token()).await?;
-
-        // Create or update user in database
-        let user = self.upsert_user(user_info).await?;
-
-        Ok(user)
+        Err(e) => {
+            tracing::warn!("Authentication failed: {}", e);
+            Err(StatusCode::UNAUTHORIZED)
+        }
     }
 }
 ```
@@ -426,26 +412,290 @@ impl OAuthService {
 ```toml
 # Authentication
 jsonwebtoken = "9.3"              # JWT token handling
-argon2 = "0.5"                    # Password hashing
-oauth2 = "4.4"                    # OAuth2 client
+argon2 = "0.5"                    # API key hashing
+chacha20poly1305 = "0.10"         # Encryption for API keys
 axum-extra = "0.9"                # Additional Axum extractors
 tower = "0.4"                     # Middleware framework
 tower-http = { version = "0.5", features = ["auth"] }
-
-# Session store (optional, for refresh tokens)
-redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 ```
 
 ### Benefits of This Approach:
 
-1. **Stateless & Scalable**: JWT tokens don't require server-side session storage
-2. **Industry Standard**: Uses well-established authentication patterns
-3. **Secure**: Argon2 for passwords, RS256 for JWT signing (optional)
-4. **Flexible**: Supports multiple auth methods (password, OAuth, API keys)
-5. **Headless-First**: No cookie/session management complexity
-6. **Performance**: Token validation without database lookups
+1. **Simplicity**: No user management complexity, just API keys
+2. **Secure**: Keys are hashed and encrypted at rest
+3. **Stateless**: JWT tokens don't require server lookups once validated
+4. **Scalable**: No session storage needed
+5. **Headless-First**: Perfect for API-only service
+6. **Performance**: Fast authentication with minimal database queries
 
-## 5. RPC/API Design Pattern
+## 5. CLI Interface for API Key Management
+
+### MetaMCP CLI Tool
+
+**API keys are managed via a dedicated CLI tool**, not through API endpoints. This ensures that only administrators with direct access to the server can create and manage API keys.
+
+#### Why CLI for API Key Management:
+
+1. **Security**: No public API endpoint for key generation prevents unauthorized key creation
+2. **Access Control**: Only users with server/database access can manage keys
+3. **Audit Trail**: CLI operations can be logged separately from API requests
+4. **Simplicity**: No need to bootstrap authentication for key management
+
+#### CLI Commands
+
+```bash
+# List all API keys
+metamcp-cli keys list
+
+# Create a new API key
+metamcp-cli keys create --name "Production Client" --description "Main production MCP client"
+
+# Show API key details (without revealing the key)
+metamcp-cli keys show <key-id>
+
+# Inactivate an API key (soft delete - can be reactivated)
+metamcp-cli keys inactivate <key-id>
+
+# Reactivate an inactive key
+metamcp-cli keys activate <key-id>
+
+# Delete an API key permanently (hard delete)
+metamcp-cli keys delete <key-id> --confirm
+
+# Rotate an API key (creates new key, marks old as inactive)
+metamcp-cli keys rotate <key-id>
+```
+
+#### Implementation
+
+```rust
+// src/bin/metamcp-cli.rs
+
+use clap::{Parser, Subcommand};
+use sqlx::PgPool;
+use metamcp::{auth::AuthService, db::Database};
+
+#[derive(Parser)]
+#[command(name = "metamcp-cli")]
+#[command(about = "MetaMCP CLI for API key management", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Manage API keys
+    Keys {
+        #[command(subcommand)]
+        action: KeyActions,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyActions {
+    /// List all API keys
+    List {
+        /// Show inactive keys
+        #[arg(long)]
+        include_inactive: bool,
+    },
+
+    /// Create a new API key
+    Create {
+        /// Name for the API key
+        #[arg(short, long)]
+        name: String,
+
+        /// Optional description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Show API key details
+    Show {
+        /// API key ID
+        key_id: String,
+    },
+
+    /// Inactivate an API key
+    Inactivate {
+        /// API key ID
+        key_id: String,
+    },
+
+    /// Activate an inactive API key
+    Activate {
+        /// API key ID
+        key_id: String,
+    },
+
+    /// Delete an API key permanently
+    Delete {
+        /// API key ID
+        key_id: String,
+
+        /// Confirm deletion
+        #[arg(long)]
+        confirm: bool,
+    },
+
+    /// Rotate an API key (create new, inactivate old)
+    Rotate {
+        /// API key ID to rotate
+        key_id: String,
+    },
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+
+    let cli = Cli::parse();
+
+    // Load configuration
+    let config = metamcp::config::load_config()?;
+
+    // Connect to database
+    let db = Database::new(&config.database_url).await?;
+    let auth_service = AuthService::new(
+        config.jwt_secret,
+        &config.encryption_key,
+        db.clone()
+    );
+
+    match cli.command {
+        Commands::Keys { action } => handle_key_commands(action, &db, &auth_service).await?,
+    }
+
+    Ok(())
+}
+
+async fn handle_key_commands(
+    action: KeyActions,
+    db: &Database,
+    auth: &AuthService,
+) -> anyhow::Result<()> {
+    match action {
+        KeyActions::List { include_inactive } => {
+            let keys = db.api_keys().list_all(include_inactive).await?;
+
+            println!("\n{:<36} {:<30} {:<10} {:<20}", "ID", "Name", "Status", "Created");
+            println!("{}", "-".repeat(100));
+
+            for key in keys {
+                let status = if key.is_active { "Active" } else { "Inactive" };
+                println!(
+                    "{:<36} {:<30} {:<10} {}",
+                    key.id,
+                    key.name,
+                    status,
+                    key.created_at.format("%Y-%m-%d %H:%M:%S")
+                );
+            }
+            println!();
+        }
+
+        KeyActions::Create { name, description } => {
+            let (api_key, stored_key) = auth.generate_api_key(name.clone()).await?;
+
+            println!("\n✅ API Key created successfully!");
+            println!("\nKey ID: {}", stored_key.id);
+            println!("Name: {}", stored_key.name);
+            if let Some(desc) = description {
+                println!("Description: {}", desc);
+            }
+            println!("\n⚠️  IMPORTANT: Save this API key now. It won't be shown again!");
+            println!("\nAPI Key: {}\n", api_key);
+        }
+
+        KeyActions::Show { key_id } => {
+            let key_uuid = uuid::Uuid::parse_str(&key_id)?;
+            let key = db.api_keys().find_by_id(key_uuid).await?
+                .ok_or_else(|| anyhow::anyhow!("API key not found"))?;
+
+            println!("\nAPI Key Details:");
+            println!("ID: {}", key.id);
+            println!("Name: {}", key.name);
+            println!("Status: {}", if key.is_active { "Active" } else { "Inactive" });
+            println!("Created: {}", key.created_at.format("%Y-%m-%d %H:%M:%S"));
+            if let Some(last_used) = key.last_used_at {
+                println!("Last Used: {}", last_used.format("%Y-%m-%d %H:%M:%S"));
+            } else {
+                println!("Last Used: Never");
+            }
+            println!();
+        }
+
+        KeyActions::Inactivate { key_id } => {
+            let key_uuid = uuid::Uuid::parse_str(&key_id)?;
+            db.api_keys().set_inactive(key_uuid).await?;
+            println!("\n✅ API key inactivated successfully\n");
+        }
+
+        KeyActions::Activate { key_id } => {
+            let key_uuid = uuid::Uuid::parse_str(&key_id)?;
+            db.api_keys().set_active(key_uuid).await?;
+            println!("\n✅ API key activated successfully\n");
+        }
+
+        KeyActions::Delete { key_id, confirm } => {
+            if !confirm {
+                eprintln!("\n❌ Error: Must use --confirm flag to delete an API key\n");
+                std::process::exit(1);
+            }
+
+            let key_uuid = uuid::Uuid::parse_str(&key_id)?;
+            db.api_keys().delete(key_uuid).await?;
+            println!("\n✅ API key deleted permanently\n");
+        }
+
+        KeyActions::Rotate { key_id } => {
+            let key_uuid = uuid::Uuid::parse_str(&key_id)?;
+            let old_key = db.api_keys().find_by_id(key_uuid).await?
+                .ok_or_else(|| anyhow::anyhow!("API key not found"))?;
+
+            // Create new key with same name (appended with timestamp)
+            let new_name = format!("{} (rotated {})", old_key.name, chrono::Utc::now().format("%Y-%m-%d"));
+            let (new_api_key, new_stored_key) = auth.generate_api_key(new_name).await?;
+
+            // Inactivate old key
+            db.api_keys().set_inactive(key_uuid).await?;
+
+            println!("\n✅ API key rotated successfully!");
+            println!("\nOld Key ID: {} (now inactive)", old_key.id);
+            println!("New Key ID: {}", new_stored_key.id);
+            println!("\n⚠️  IMPORTANT: Save this new API key now!");
+            println!("\nNew API Key: {}\n", new_api_key);
+        }
+    }
+
+    Ok(())
+}
+```
+
+#### Key Dependencies for CLI
+
+```toml
+# In Cargo.toml
+[[bin]]
+name = "metamcp-cli"
+path = "src/bin/metamcp-cli.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+```
+
+### Benefits of CLI Approach
+
+1. **Secure**: No public endpoint for key creation
+2. **Simple**: Standard CLI tool, works like other database admin tools
+3. **Flexible**: Easy to add more admin commands later
+4. **Scriptable**: Can be used in deployment scripts
+5. **Auditable**: Can integrate with system logging
+
+## 6. RPC/API Design Pattern
 
 ### Recommended: RESTful with OpenAPI
 
@@ -496,26 +746,26 @@ use serde::{Deserialize, Serialize};
 #[openapi(
     paths(
         health_check,
-        list_users,
-        get_user,
-        create_user,
-        update_user,
-        delete_user,
+        authenticate,
         list_mcp_servers,
-        execute_mcp_tool
+        get_mcp_server,
+        create_mcp_server,
+        delete_mcp_server,
+        execute_mcp_tool,
+        stream_mcp_messages
     ),
     components(
-        schemas(User, CreateUserRequest, UpdateUserRequest, McpServer, McpToolRequest, McpToolResponse, ErrorResponse)
+        schemas(McpServer, McpToolRequest, McpToolResponse, AuthRequest, AuthResponse, ErrorResponse)
     ),
     tags(
         (name = "health", description = "Health check endpoints"),
-        (name = "users", description = "User management"),
+        (name = "auth", description = "JWT token authentication"),
         (name = "mcp", description = "MCP server operations")
     ),
     info(
         title = "MetaMCP API",
         version = "1.0.0",
-        description = "Headless API backend for MetaMCP",
+        description = "Headless API backend for MetaMCP - MCP Protocol Proxy with streaming HTTP",
         contact(
             name = "MetaMCP Team",
             email = "support@metamcp.io"
@@ -534,21 +784,19 @@ struct ApiDoc;
 
 // Request/Response schemas
 #[derive(Serialize, Deserialize, ToSchema)]
-struct User {
-    #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
-    id: Uuid,
-    #[schema(example = "user@example.com")]
-    email: String,
-    #[schema(example = "2024-01-01T00:00:00Z")]
-    created_at: DateTime<Utc>,
+struct AuthRequest {
+    #[schema(example = "mcp_a1b2c3d4e5f6")]
+    api_key: String,
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
-struct CreateUserRequest {
-    #[schema(example = "user@example.com")]
-    email: String,
-    #[schema(example = "securePassword123")]
-    password: String,
+struct AuthResponse {
+    #[schema(example = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")]
+    access_token: String,
+    #[schema(example = "Bearer")]
+    token_type: String,
+    #[schema(example = 900)]
+    expires_in: u64,
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -577,49 +825,25 @@ async fn health_check(State(state): State<AppState>) -> Result<Json<HealthRespon
 
 #[utoipa::path(
     post,
-    path = "/api/v1/users",
-    tag = "users",
-    request_body = CreateUserRequest,
+    path = "/api/v1/auth/token",
+    tag = "auth",
+    request_body = AuthRequest,
     responses(
-        (status = 201, description = "User created successfully", body = User),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 409, description = "User already exists", body = ErrorResponse)
-    ),
-    security(
-        ("bearer_auth" = [])
+        (status = 200, description = "JWT token generated", body = AuthResponse),
+        (status = 401, description = "Invalid API key", body = ErrorResponse)
     )
 )]
-async fn create_user(
+async fn authenticate(
     State(state): State<AppState>,
-    Json(payload): Json<CreateUserRequest>,
-) -> Result<(StatusCode, Json<User>), AppError> {
-    // User creation logic
-    let user = state.db.users().create(payload).await?;
-    Ok((StatusCode::CREATED, Json(user)))
-}
+    Json(payload): Json<AuthRequest>,
+) -> Result<Json<AuthResponse>, AppError> {
+    let token = state.auth.authenticate_with_api_key(&payload.api_key).await?;
 
-#[utoipa::path(
-    get,
-    path = "/api/v1/users/{id}",
-    tag = "users",
-    params(
-        ("id" = Uuid, Path, description = "User ID")
-    ),
-    responses(
-        (status = 200, description = "User found", body = User),
-        (status = 404, description = "User not found", body = ErrorResponse)
-    ),
-    security(
-        ("bearer_auth" = [])
-    )
-)]
-async fn get_user(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<User>, AppError> {
-    let user = state.db.users().find_by_id(id).await?
-        .ok_or(AppError::NotFound)?;
-    Ok(Json(user))
+    Ok(Json(AuthResponse {
+        access_token: token,
+        token_type: "Bearer".to_string(),
+        expires_in: 900, // 15 minutes
+    }))
 }
 
 // MCP-specific endpoints
@@ -652,38 +876,35 @@ async fn execute_mcp_tool(
 
 // Router setup
 pub fn create_api_router(state: AppState) -> Router {
-    Router::new()
-        // Health check
+    // Public routes (no auth required)
+    let public_routes = Router::new()
         .route("/health", get(health_check))
+        .route("/api/v1/auth/token", post(authenticate));  // Get JWT from API key
 
-        // User management
-        .route("/api/v1/users", post(create_user).get(list_users))
-        .route("/api/v1/users/:id", get(get_user).put(update_user).delete(delete_user))
-
-        // MCP operations
+    // Protected routes (auth required)
+    let protected_routes = Router::new()
+        // MCP server management
         .route("/api/v1/mcp/servers", get(list_mcp_servers).post(create_mcp_server))
         .route("/api/v1/mcp/servers/:id", get(get_mcp_server).delete(delete_mcp_server))
         .route("/api/v1/mcp/servers/:server_id/tools", get(list_tools))
         .route("/api/v1/mcp/servers/:server_id/tools/:tool_name/execute", post(execute_mcp_tool))
 
-        // SSE endpoint for real-time updates
-        .route("/api/v1/events", get(sse_handler))
+        // Streaming HTTP endpoint for MCP communication
+        .route("/api/v1/mcp/stream", post(stream_mcp_messages))
 
+        // Apply authentication middleware
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+    Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
         // Serve OpenAPI documentation
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-
-        // Apply authentication middleware to protected routes
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state)
 }
+```
 
-// Versioning strategy
-pub fn create_versioned_api() -> Router {
-    Router::new()
-        .nest("/api/v1", v1::router())
-        // Future versions can be added here
-        // .nest("/api/v2", v2::router())
-}
+**Note**: API keys are created via the `metamcp-cli` tool, not through API endpoints. This ensures secure key management.
 ```
 
 #### Key Dependencies for RESTful/OpenAPI:
@@ -1012,33 +1233,46 @@ pub fn set_resource_limits(cmd: &mut Command) {
 - **Cons**: Additional dependency, less integrated with Tokio
 - Use only if you need specific features not available in tokio::process
 
-## 7. Streaming/SSE Implementation
+## 7. Streaming Architecture & Protocol Translation
 
-### Recommended: Custom Implementation with Tokio Streams + Axum SSE
+### Client Communication: Streaming HTTP ONLY
 
-**A hybrid approach combining Axum's SSE support with custom Tokio streams** is recommended for MetaMCP, providing maximum flexibility for MCP protocol streaming while maintaining clean abstractions.
+**MetaMCP clients communicate with the server using ONLY streaming HTTP** (not SSE, not WebSockets). This uses standard HTTP with chunked transfer encoding for bidirectional streaming.
 
-#### Why This Approach:
+### Backend MCP Servers: SSE or stdio
 
-1. **Fine-grained Control**
-   - Custom stream management for MCP events
-   - Backpressure handling
-   - Per-client stream customization
+**Backend MCP servers can use:**
+1. **Streaming HTTP** - for HTTP-based MCP servers (initial version)
+2. **SSE (Server-Sent Events)** - for HTTP-based MCP servers (future)
+3. **stdio** - for process-based MCP servers (future)
 
-2. **Efficient Resource Management**
-   - Automatic cleanup on disconnect
-   - Memory-bounded channels
-   - Connection pooling
+**Initial Version**: Only streaming HTTP backend servers supported. SSE and stdio translation will be added later.
 
-3. **Protocol Flexibility**
-   - Support SSE for web clients
-   - WebSockets for bidirectional communication
-   - Raw TCP streams for MCP servers
+### Protocol Translation Architecture
 
-4. **Scalability**
-   - Broadcast to multiple clients efficiently
-   - Selective event filtering
-   - Rate limiting per client
+```
+┌─────────────┐                    ┌──────────────┐                    ┌─────────────┐
+│             │  Streaming HTTP    │              │   Streaming HTTP   │             │
+│  MCP Client ├───────────────────►│   MetaMCP    ├───────────────────►│ MCP Backend │
+│             │◄───────────────────┤    Server    │◄───────────────────┤   Server    │
+└─────────────┘  HTTP Chunks       │              │   SSE/stdio (v2)   └─────────────┘
+                                    │              │
+                                    │  Protocol    │
+                                    │  Translation │
+                                    └──────────────┘
+```
+
+#### Why Streaming HTTP for Clients:
+
+1. **Simplicity**: Standard HTTP with chunked transfer encoding
+2. **Universal Support**: Works with any HTTP client library
+3. **No Special Protocols**: No WebSocket or SSE dependencies
+4. **Bidirectional**: Request/response streaming
+5. **Firewall Friendly**: Pure HTTP/HTTPS traffic
+
+#### Implementation with Tokio Streams
+
+Internal implementation uses Tokio streams for efficient message handling, even though the external API is streaming HTTP.
 
 #### Implementation Architecture:
 
@@ -1422,164 +1656,248 @@ pin-project = "1.1"   # For custom stream implementations
 
 ```
 metamcp_rust/
-├── Cargo.toml
+├── Cargo.toml                     # Define both server and CLI binaries
 ├── Cargo.lock
+├── README.md
+├── MIGRATION_PLAN.md
+│
 ├── src/
-│   ├── main.rs
-│   ├── lib.rs
+│   ├── main.rs                    # Main server entry point
+│   ├── lib.rs                     # Library exports (shared by server and CLI)
+│   │
+│   ├── bin/
+│   │   └── metamcp-cli.rs         # CLI tool for API key management
+│   │
 │   ├── config/
 │   │   ├── mod.rs
-│   │   └── settings.rs
+│   │   └── settings.rs            # Configuration management
+│   │
 │   ├── auth/
 │   │   ├── mod.rs
-│   │   ├── handlers.rs
-│   │   ├── middleware.rs
-│   │   └── jwt.rs
+│   │   ├── api_key.rs             # API key management
+│   │   ├── jwt.rs                 # JWT token handling
+│   │   └── middleware.rs          # Auth middleware
+│   │
 │   ├── db/
 │   │   ├── mod.rs
 │   │   ├── models/
-│   │   ├── schema.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── api_key.rs         # API key model
+│   │   │   └── mcp_server.rs      # MCP server config model
+│   │   ├── repositories/
+│   │   │   ├── mod.rs
+│   │   │   ├── api_key.rs         # API key repository
+│   │   │   └── mcp_server.rs      # MCP server repository
 │   │   └── migrations/
+│   │
 │   ├── mcp/
 │   │   ├── mod.rs
-│   │   ├── proxy.rs
-│   │   ├── protocol.rs
-│   │   └── server_manager.rs
+│   │   ├── protocol/
+│   │   │   ├── mod.rs
+│   │   │   ├── types.rs           # MCP protocol types
+│   │   │   └── translator.rs      # Protocol translation (HTTP <-> SSE/stdio)
+│   │   ├── proxy.rs               # MCP proxy/router
+│   │   ├── server_manager.rs      # Backend MCP server management
+│   │   └── client_handler.rs      # Client connection handler
+│   │
 │   ├── api/
 │   │   ├── mod.rs
 │   │   ├── routes/
+│   │   │   ├── mod.rs
+│   │   │   ├── auth.rs            # Auth endpoints
+│   │   │   ├── mcp.rs             # MCP operations
+│   │   │   └── health.rs          # Health check
 │   │   ├── handlers/
+│   │   │   ├── mod.rs
+│   │   │   ├── auth.rs
+│   │   │   └── mcp.rs
 │   │   └── middleware/
+│   │       ├── mod.rs
+│   │       └── auth.rs
+│   │
 │   ├── streaming/
 │   │   ├── mod.rs
-│   │   ├── sse.rs
-│   │   └── websocket.rs
+│   │   ├── http_stream.rs         # Streaming HTTP implementation
+│   │   └── manager.rs             # Stream manager
+│   │
 │   └── utils/
 │       ├── mod.rs
-│       └── error.rs
+│       └── error.rs               # Error types
+│
 ├── migrations/
+│   ├── 001_create_api_keys.sql
+│   └── 002_create_mcp_servers.sql
+│
+├── examples/
+│   ├── test_client.rs             # Test MCP client
+│   ├── backend_server_1.rs        # Test backend MCP server #1
+│   └── backend_server_2.rs        # Test backend MCP server #2
+│
 ├── tests/
 │   ├── integration/
+│   │   ├── mod.rs
+│   │   ├── auth_flow.rs           # API key + JWT flow tests
+│   │   ├── cli_tests.rs           # CLI tool integration tests
+│   │   ├── mcp_proxy.rs           # MCP proxying tests
+│   │   └── end_to_end.rs          # Full client -> MetaMCP -> backend tests
 │   └── unit/
+│       ├── mod.rs
+│       ├── auth.rs
+│       ├── protocol.rs
+│       └── streaming.rs
+│
 └── benches/
+    ├── auth_bench.rs
+    └── streaming_bench.rs
 ```
 
 ## 9. Migration Phases
 
 ### Phase 1: Core Infrastructure (Week 1-2)
-- [ ] Set up Rust project with chosen web framework
+- [ ] Set up Rust project with Axum web framework
 - [ ] Implement configuration management
-- [ ] Set up database connection pool
-- [ ] Create error handling framework
+- [ ] Set up database connection pool with SQLx
+- [ ] Create error handling framework (thiserror + anyhow)
 - [ ] Implement logging and tracing
 
-### Phase 2: Database Layer (Week 2-3)
-- [ ] Define database schema in Rust
-- [ ] Migrate existing migrations to chosen ORM
-- [ ] Implement repository pattern for data access
-- [ ] Add transaction support
-- [ ] Create database seeding scripts
+### Phase 2: Database Layer & API Keys (Week 2-3)
+- [ ] Define API keys schema
+- [ ] Define MCP server configuration schema
+- [ ] Create SQLx migrations
+- [ ] Implement API key repository
+- [ ] Implement MCP server repository
+- [ ] Add encryption for API keys at rest
 
-### Phase 3: Authentication System (Week 3-4)
-- [ ] Port OAuth2 endpoints
-- [ ] Implement JWT token generation/validation
-- [ ] Create session management
-- [ ] Add API key authentication
-- [ ] Implement user registration/login
+### Phase 3: Authentication System & CLI Tool (Week 3-4)
+- [ ] Implement API key generation and storage
+- [ ] Implement JWT token generation from API keys
+- [ ] Create JWT validation middleware
+- [ ] Add API key revocation
+- [ ] Create auth endpoint (/api/v1/auth/token)
+- [ ] **Build CLI tool (metamcp-cli)**
+  - [ ] Implement `keys list` command
+  - [ ] Implement `keys create` command
+  - [ ] Implement `keys show` command
+  - [ ] Implement `keys inactivate` command
+  - [ ] Implement `keys activate` command
+  - [ ] Implement `keys delete` command
+  - [ ] Implement `keys rotate` command
+- [ ] Test CLI tool with database operations
 
 ### Phase 4: MCP Protocol Implementation (Week 4-6)
-- [ ] Create MCP protocol types
-- [ ] Implement MCP proxy router
-- [ ] Add server spawning/management
-- [ ] Handle bidirectional streaming
-- [ ] Implement protocol message parsing
+- [ ] Define MCP protocol types (messages, tools, resources)
+- [ ] Implement streaming HTTP handler for clients
+- [ ] Create MCP proxy/router
+- [ ] Add backend server management (spawn, stop, monitor)
+- [ ] Implement protocol message parsing and validation
+- [ ] Add basic protocol translation layer (HTTP passthrough initially)
 
-### Phase 5: API Endpoints (Week 6-7)
-- [ ] Port tRPC-like functionality or create REST/GraphQL API
-- [ ] Implement all existing endpoints
-- [ ] Add request validation
-- [ ] Create response serialization
-- [ ] Add API documentation
+### Phase 5: API Endpoints (Week 5-6)
+- [ ] Implement MCP server management endpoints
+- [ ] Implement MCP tool execution endpoints
+- [ ] Add request validation with validator crate
+- [ ] Create OpenAPI documentation with utoipa
+- [ ] Add Swagger UI for API exploration
 
-### Phase 6: Streaming & Real-time (Week 7-8)
-- [ ] Implement SSE endpoints
-- [ ] Add WebSocket support (if needed)
-- [ ] Create pub/sub system for real-time updates
-- [ ] Handle long-polling fallback
+### Phase 6: Streaming HTTP Implementation (Week 6-7)
+- [ ] Implement streaming HTTP with chunked transfer encoding
+- [ ] Add bidirectional streaming support
+- [ ] Create stream manager for connection handling
+- [ ] Implement backpressure and flow control
+- [ ] Add connection cleanup on disconnect
 
-### Phase 7: Testing & Optimization (Week 8-9)
+### Phase 7: Testing Components (Week 7-8)
+- [ ] Create test MCP client (examples/test_client.rs)
+- [ ] Create test backend MCP server #1 (examples/backend_server_1.rs)
+- [ ] Create test backend MCP server #2 (examples/backend_server_2.rs)
 - [ ] Write unit tests for all modules
-- [ ] Create integration tests
+- [ ] Create integration tests (auth flow, MCP proxy, end-to-end)
 - [ ] Add performance benchmarks
-- [ ] Optimize hot paths
-- [ ] Load testing
 
-### Phase 8: Deployment & Migration (Week 9-10)
-- [ ] Create Docker images
-- [ ] Set up CI/CD pipeline
-- [ ] Create migration scripts for data
-- [ ] Implement blue-green deployment
-- [ ] Monitor and rollback strategy
+### Phase 8: Optimization & Documentation (Week 8-9)
+- [ ] Optimize hot paths (streaming, protocol translation)
+- [ ] Add comprehensive error messages
+- [ ] Create README with setup instructions
+- [ ] Document API key generation process
+- [ ] Add examples for client usage
+- [ ] Load testing and performance tuning
 
-## 10. Key Design Decisions Required
+### Phase 9: Future Enhancements (Post-MVP)
+- [ ] Add SSE support for backend MCP servers
+- [ ] Add stdio support for backend MCP servers
+- [ ] Implement full protocol translation (HTTP <-> SSE/stdio)
+- [ ] Add metrics and monitoring (Prometheus)
+- [ ] Add distributed tracing (OpenTelemetry)
+- [ ] Implement rate limiting per API key
+- [ ] Add API key usage analytics
 
-### Questions for Architecture Selection:
+## 10. Key Design Decisions
 
-1. **Web Framework**: Which option (Axum/Actix/Rocket) aligns best with your team's experience and performance requirements?
+### Architecture Decisions Made ✅
+
+1. **Web Framework** ✅ **DECIDED: Axum**
+   - Type-safe routing with excellent async performance
+   - Tower ecosystem integration for middleware
+   - Native support for streaming HTTP
+   - Strong community and production-proven
 
 2. **Database Strategy** ✅ **DECIDED: SQLx**
    - SQLx chosen for compile-time SQL validation and seamless async support
-   - Maintains schema compatibility with existing database
-   - Direct SQL queries make migration from Drizzle straightforward
+   - No ORM overhead, direct SQL queries
+   - Built-in connection pooling and migration support
+   - Perfect for API key and server config persistence
 
-3. **Authentication Strategy** ✅ **DECIDED: Headless JWT-based**
-   - Stateless JWT tokens for API authentication
-   - Using battle-tested Rust crates (jsonwebtoken, argon2, oauth2)
-   - Support for OAuth2, API keys, and password-based auth
-   - No session/cookie management for true headless API
+3. **Authentication Strategy** ✅ **DECIDED: API Key + JWT**
+   - NO user accounts, NO OAuth, NO sessions
+   - Simple API key generation and storage (encrypted)
+   - Short-lived JWT tokens generated from API keys
+   - Stateless authentication perfect for API-only service
 
 4. **API Protocol** ✅ **DECIDED: RESTful with OpenAPI**
    - RESTful API with OpenAPI/Swagger documentation
    - Universal client compatibility (any HTTP client works)
-   - Auto-generated API documentation and client SDKs
+   - Auto-generated API documentation
    - Industry standard with excellent tooling
 
-5. **Process Management** ✅ **DECIDED: tokio::process**
+5. **Client Communication** ✅ **DECIDED: Streaming HTTP Only**
+   - Clients use ONLY streaming HTTP (chunked transfer encoding)
+   - NO SSE or WebSockets for clients
+   - Simplifies client implementation
+   - Standard HTTP/HTTPS traffic
+
+6. **Backend MCP Servers** ✅ **DECIDED: Streaming HTTP (v1), SSE/stdio (v2)**
+   - Initial version: Only streaming HTTP backend servers
+   - Future versions: Add SSE and stdio support with protocol translation
+   - MetaMCP acts as protocol translator
+
+7. **Process Management** ✅ **DECIDED: tokio::process**
    - Native Tokio integration for async process spawning
    - Stream-based I/O for MCP message handling
-   - Built-in support for graceful shutdown and resource limits
-   - No additional dependencies needed
+   - Built-in support for graceful shutdown
+   - Used for spawning backend MCP server processes
 
-6. **Streaming/Real-time** ✅ **DECIDED: Custom Tokio Streams + Axum**
-   - Hybrid approach with Tokio streams and Axum's SSE/WebSocket
-   - Support for SSE, WebSockets, and raw TCP
-   - Efficient broadcasting with event filtering
-   - Automatic cleanup and backpressure handling
+8. **MCP Protocol** ✅ **DECIDED: Native Rust Implementation**
+   - Implement MCP protocol natively in Rust
+   - No FFI bindings to JavaScript SDK
+   - Full control over protocol implementation
+   - Protocol translation layer for SSE/stdio (future)
 
-7. **MCP Protocol**:
-   - Should we create FFI bindings to the existing SDK or implement the protocol natively in Rust?
-   - What's the strategy for maintaining protocol compatibility?
+9. **Error Handling** ✅ **DECIDED: thiserror + anyhow**
+   - `thiserror` for library errors (structured)
+   - `anyhow` for application errors (contextual)
+   - Custom error types with `From` implementations
 
-8. **Concurrency Model**:
-   - Tokio-based async/await throughout?
-   - Actor model for certain components?
-   - Thread pool for CPU-intensive tasks?
-
-7. **Error Handling**:
-   - `thiserror` + `anyhow` combination?
-   - Custom error types with `From` implementations?
-
-8. **Configuration**:
-   - Environment variables with `dotenv`?
-   - TOML/YAML configuration files?
-   - Runtime reloading support?
+10. **Configuration** ✅ **DECIDED: Environment Variables + TOML**
+    - Environment variables for secrets and deployment config
+    - TOML file for application settings
+    - No runtime reloading initially (restart required)
 
 ## 11. Dependencies Recommendation
 
 ```toml
 [dependencies]
 # Web Framework
-axum = { version = "0.7", features = ["ws"] }  # WebSocket support included
+axum = { version = "0.7", features = ["http2"] }  # HTTP/2 for streaming
 
 # Async Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -1588,40 +1906,38 @@ tokio = { version = "1.38", features = ["full"] }
 tokio-stream = "0.1"
 futures = "0.3"
 
-# Database - SQLx (Recommended)
+# Database - SQLx
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "uuid", "chrono", "migrate"] }
-# Additional SQLx features for development
-# sqlx-cli should be installed globally: cargo install sqlx-cli
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Authentication (Headless API)
+# Authentication (API Key + JWT only)
 jsonwebtoken = "9.3"              # JWT token handling
-argon2 = "0.5"                    # Password hashing
-oauth2 = "4.4"                    # OAuth2 client support
+argon2 = "0.5"                    # API key hashing
+chacha20poly1305 = "0.10"         # API key encryption at rest
 axum-extra = "0.9"                # Additional extractors for Bearer tokens
 tower = "0.4"                     # Middleware framework
 tower-http = { version = "0.5", features = ["auth", "cors"] }
 
 # Error Handling
-thiserror = "1.0"
-anyhow = "1.0"
+thiserror = "1.0"                 # Structured errors
+anyhow = "1.0"                    # Context-rich errors
 
-# Logging
+# Logging & Tracing
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Configuration
-config = "0.14"
-dotenv = "0.15"
+config = "0.14"                   # TOML configuration
+dotenv = "0.15"                   # Environment variables
 
 # UUID and Time
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-# HTTP Client
+# HTTP Client (for backend MCP servers)
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # Validation
@@ -1630,6 +1946,26 @@ validator = { version = "0.18", features = ["derive"] }
 # OpenAPI/REST API Documentation
 utoipa = { version = "4.2", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "6.0", features = ["axum"] }
+
+# CLI Tool
+clap = { version = "4.5", features = ["derive"] }
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+wiremock = "0.6"                  # HTTP mocking for tests
+criterion = "0.5"                 # Benchmarking
+```
+
+### Global Tools
+
+```bash
+# SQLx CLI for migrations
+cargo install sqlx-cli --no-default-features --features postgres
+
+# Development tools
+cargo install cargo-watch          # Auto-rebuild on changes
+cargo install cargo-nextest        # Better test runner
 ```
 
 ## 12. Performance Considerations
@@ -1690,20 +2026,610 @@ mod tests {
 - Security headers (Helmet equivalent)
 - Secrets management
 
-## Next Steps
+## 16. Testing Strategy
 
-1. **Review and select architecture options**
-2. **Create proof-of-concept for critical components**
-3. **Set up development environment**
-4. **Begin Phase 1 implementation**
+### Test Components
 
-## Questions for Decision Making
+1. **Test MCP Client** (`examples/test_client.rs`)
+   - Implements MCP client using streaming HTTP
+   - Tests API key authentication and JWT token generation
+   - Sends various MCP protocol messages (tools.list, tools.call, etc.)
+   - Validates responses from MetaMCP server
 
-1. What's your team's Rust experience level?
-2. Are there specific performance SLAs to meet?
-3. Do you need to maintain backward compatibility with existing clients?
-4. What's the deployment target (Docker, bare metal, cloud)?
-5. Are there specific compliance requirements (GDPR, SOC2)?
-6. What's the expected scale (users, requests/sec)?
-7. Do you need real-time features beyond SSE?
-8. Should the migration be incremental or a complete rewrite?
+2. **Backend Test Server #1** (`examples/backend_server_1.rs`)
+   - Simple MCP server providing basic tools (echo, math operations)
+   - Implements streaming HTTP MCP protocol
+   - Used for basic end-to-end testing
+
+3. **Backend Test Server #2** (`examples/backend_server_2.rs`)
+   - More complex MCP server with resources and prompts
+   - Implements streaming HTTP MCP protocol
+   - Used for testing advanced MCP features
+
+### End-to-End Test Flow
+
+```
+Test Client  →  MetaMCP Server  →  Backend Server #1
+                     ↓
+                 API Key DB
+                     ↓
+              Backend Server #2
+```
+
+1. Test client obtains API key
+2. Test client generates JWT token
+3. Test client connects to MetaMCP via streaming HTTP
+4. MetaMCP validates JWT and proxies to backend servers
+5. Responses flow back through MetaMCP to client
+6. All communication verified and logged
+
+## 17. Development Environment Setup
+
+### PostgreSQL in Docker
+
+For development, run PostgreSQL in a Docker container for easy setup and isolation.
+
+**Configuration Strategy:**
+All database configuration is centralized in a `.env` file, which is:
+- Used by Docker Compose for container configuration
+- Used by SQLx CLI for running migrations
+- Used by the MetaMCP application for database connections
+
+This approach:
+- ✅ Keeps credentials in one place
+- ✅ Makes it easy to change environments (dev/staging/prod)
+- ✅ Follows 12-factor app principles
+- ✅ Prevents hardcoding credentials in docker-compose.yml
+
+#### Option 1: Docker Compose (Recommended)
+
+Create a `docker-compose.yml` in the project root:
+
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: metamcp-postgres
+    restart: unless-stopped
+    environment:
+      # Uses variables from .env file with defaults as fallback
+      POSTGRES_USER: ${POSTGRES_USER:-metamcp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-metamcp_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-metamcp_dev}
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-metamcp} -d ${POSTGRES_DB:-metamcp_dev}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+    driver: local
+```
+
+**How it works:**
+- Docker Compose automatically reads `.env` file from the project root
+- Variables like `${POSTGRES_USER:-metamcp}` use `.env` values or defaults
+- All database configuration comes from a single `.env` file
+- Easy to change credentials without editing `docker-compose.yml`
+
+**Usage:**
+
+```bash
+# Start PostgreSQL
+docker-compose up -d postgres
+
+# Check status
+docker-compose ps
+
+# View logs
+docker-compose logs -f postgres
+
+# Stop PostgreSQL
+docker-compose down
+
+# Stop and remove data (fresh start)
+docker-compose down -v
+```
+
+#### Option 2: Docker Run Command
+
+```bash
+# Create a docker volume for data persistence
+docker volume create metamcp-postgres-data
+
+# Run PostgreSQL container
+docker run -d \
+  --name metamcp-postgres \
+  -e POSTGRES_USER=metamcp \
+  -e POSTGRES_PASSWORD=metamcp_dev_password \
+  -e POSTGRES_DB=metamcp_dev \
+  -p 5432:5432 \
+  -v metamcp-postgres-data:/var/lib/postgresql/data \
+  --restart unless-stopped \
+  postgres:16-alpine
+
+# Check container is running
+docker ps | grep metamcp-postgres
+
+# View logs
+docker logs -f metamcp-postgres
+
+# Stop container
+docker stop metamcp-postgres
+
+# Start container
+docker start metamcp-postgres
+
+# Remove container (keeps data in volume)
+docker rm metamcp-postgres
+
+# Remove container and data
+docker rm metamcp-postgres
+docker volume rm metamcp-postgres-data
+```
+
+#### Connection Configuration
+
+Create a `.env` file in the project root (copy from `.env.example`):
+
+```bash
+cp .env.example .env
+```
+
+The `.env` file should contain:
+
+```env
+# ============================================================================
+# Database Configuration (used by both Docker and application)
+# ============================================================================
+
+# PostgreSQL Docker container settings
+POSTGRES_USER=metamcp
+POSTGRES_PASSWORD=metamcp_dev_password
+POSTGRES_DB=metamcp_dev
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+
+# Database connection string (must match above variables)
+DATABASE_URL=postgresql://metamcp:metamcp_dev_password@localhost:5432/metamcp_dev
+
+# ============================================================================
+# Security Configuration
+# ============================================================================
+
+# JWT Secret (generate with: openssl rand -base64 32)
+JWT_SECRET=your-secret-key-here
+
+# Encryption Key for API Keys (generate with: openssl rand -hex 32)
+ENCRYPTION_KEY=your-encryption-key-here
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+
+SERVER_HOST=127.0.0.1
+SERVER_PORT=12009
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+
+RUST_LOG=info,metamcp=debug
+```
+
+**Generate secure secrets:**
+
+```bash
+# Generate and update secrets in .env
+JWT_SECRET=$(openssl rand -base64 32)
+ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+echo "JWT_SECRET=${JWT_SECRET}"
+echo "ENCRYPTION_KEY=${ENCRYPTION_KEY}"
+
+# Update .env file with these values
+```
+
+**Important:** `.env` is already in `.gitignore` to prevent committing secrets to version control.
+
+#### Verify Database Connection
+
+```bash
+# Load environment variables
+source .env
+
+# Using psql (install postgresql-client if needed)
+psql $DATABASE_URL
+
+# Or using Docker with environment variables
+docker exec -it metamcp-postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
+
+# Or with hardcoded values (less flexible)
+docker exec -it metamcp-postgres psql -U metamcp -d metamcp_dev
+
+# Test queries inside psql
+postgres=# SELECT version();
+postgres=# \l  -- List databases
+postgres=# \dt  -- List tables (after migrations)
+postgres=# \q  -- Quit
+```
+
+#### Running Migrations
+
+After setting up the database, run SQLx migrations:
+
+```bash
+# Install SQLx CLI if not already installed
+cargo install sqlx-cli --no-default-features --features postgres
+
+# Create migration files (examples)
+sqlx migrate add create_api_keys
+sqlx migrate add create_mcp_servers
+
+# Run migrations
+sqlx migrate run
+
+# Revert last migration
+sqlx migrate revert
+
+# Check migration status
+sqlx migrate info
+```
+
+#### Database Schema Setup
+
+Create migration files in `migrations/` directory:
+
+**`migrations/20240101000001_create_api_keys.sql`:**
+
+```sql
+-- Create API keys table
+CREATE TABLE IF NOT EXISTS api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    key_hash VARCHAR(255) NOT NULL UNIQUE,
+    encrypted_key BYTEA NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+
+    CONSTRAINT api_keys_name_check CHECK (char_length(name) > 0)
+);
+
+-- Index for fast lookup by hash
+CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash) WHERE is_active = true;
+
+-- Index for listing active keys
+CREATE INDEX idx_api_keys_active ON api_keys(is_active, created_at DESC);
+```
+
+**`migrations/20240101000002_create_mcp_servers.sql`:**
+
+```sql
+-- Create MCP servers configuration table
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    url VARCHAR(512) NOT NULL,
+    protocol VARCHAR(50) NOT NULL DEFAULT 'http', -- 'http', 'sse', 'stdio'
+    command TEXT,  -- For stdio-based servers
+    args JSONB,    -- Command arguments for stdio servers
+    env JSONB,     -- Environment variables
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT mcp_servers_name_check CHECK (char_length(name) > 0),
+    CONSTRAINT mcp_servers_protocol_check CHECK (protocol IN ('http', 'sse', 'stdio'))
+);
+
+-- Index for listing active servers
+CREATE INDEX idx_mcp_servers_active ON mcp_servers(is_active, name);
+
+-- Trigger to update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_mcp_servers_updated_at
+    BEFORE UPDATE ON mcp_servers
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+```
+
+#### SQLx Offline Mode (Optional)
+
+For CI/CD or offline compilation, prepare SQLx metadata:
+
+```bash
+# Set DATABASE_URL in .env first
+export DATABASE_URL=postgresql://metamcp:metamcp_dev_password@localhost:5432/metamcp_dev
+
+# Prepare metadata (after migrations are run)
+cargo sqlx prepare
+
+# This creates .sqlx/ directory with query metadata
+# Commit .sqlx/ to version control for offline builds
+```
+
+In `Cargo.toml`, enable offline mode:
+
+```toml
+[dependencies]
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "uuid", "chrono", "migrate", "offline"] }
+```
+
+#### Docker Compose Full Stack (Optional)
+
+For a complete development environment with pgAdmin, the `docker-compose.yml` already includes pgAdmin (commented out). To enable it:
+
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: metamcp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-metamcp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-metamcp_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-metamcp_dev}
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-metamcp} -d ${POSTGRES_DB:-metamcp_dev}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: pgAdmin for database management UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: metamcp-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@metamcp.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+```
+
+**Start full stack:**
+```bash
+docker-compose up -d postgres pgadmin
+```
+
+**Access pgAdmin:**
+- URL: http://localhost:5050
+- Email: `admin@metamcp.local` (or from `PGADMIN_EMAIL` in `.env`)
+- Password: `admin` (or from `PGADMIN_PASSWORD` in `.env`)
+
+**Connect pgAdmin to PostgreSQL:**
+1. Click "Add New Server"
+2. General tab: Name = "MetaMCP Local"
+3. Connection tab:
+   - Host: `postgres` (Docker service name)
+   - Port: `5432`
+   - Username: Value of `POSTGRES_USER` from `.env`
+   - Password: Value of `POSTGRES_PASSWORD` from `.env`
+   - Database: Value of `POSTGRES_DB` from `.env`
+
+#### Troubleshooting
+
+**Port already in use:**
+```bash
+# Check what's using port 5432
+lsof -i :5432
+
+# Stop local PostgreSQL if running
+sudo systemctl stop postgresql  # Linux
+brew services stop postgresql   # macOS
+
+# Or change port in .env file
+echo "POSTGRES_PORT=5433" >> .env
+# Then restart: docker-compose down && docker-compose up -d postgres
+```
+
+**Connection refused:**
+```bash
+# Check Docker container is running
+docker ps | grep postgres
+
+# Check container logs
+docker logs metamcp-postgres
+
+# Verify network connectivity (using .env variables)
+source .env
+docker exec metamcp-postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB
+```
+
+**Database credentials mismatch:**
+```bash
+# Ensure all variables in .env are consistent
+source .env
+echo "User: $POSTGRES_USER"
+echo "DB: $POSTGRES_DB"
+echo "URL: $DATABASE_URL"
+
+# DATABASE_URL should match: postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB
+```
+
+**Reset database:**
+```bash
+# Stop and remove everything (WARNING: deletes all data)
+docker-compose down -v
+
+# Start fresh
+docker-compose up -d postgres
+
+# Run migrations
+sqlx migrate run
+```
+
+**Docker Compose not reading .env:**
+```bash
+# Verify .env file exists in project root
+ls -la .env
+
+# Verify .env has proper format (no spaces around =)
+# Good: POSTGRES_USER=metamcp
+# Bad:  POSTGRES_USER = metamcp
+
+# Test variable expansion
+docker-compose config | grep POSTGRES_USER
+```
+
+## 18. Next Steps
+
+### Quick Start Guide
+
+1. **Initialize Rust project**
+   ```bash
+   cargo new --bin metamcp_rust
+   cd metamcp_rust
+   ```
+
+2. **Configure environment** (FIRST - before Docker)
+   ```bash
+   # Copy environment template
+   cp .env.example .env
+
+   # Generate and set secrets
+   JWT_SECRET=$(openssl rand -base64 32)
+   ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+   # Update .env file
+   sed -i.bak "s|JWT_SECRET=.*|JWT_SECRET=${JWT_SECRET}|" .env
+   sed -i.bak "s|ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${ENCRYPTION_KEY}|" .env
+
+   # Verify .env contains database credentials
+   cat .env | grep POSTGRES_
+   ```
+
+3. **Set up PostgreSQL with Docker** (See Section 17 above)
+   ```bash
+   # Docker Compose will automatically read .env file
+   docker-compose up -d postgres
+
+   # Verify connection (using credentials from .env)
+   source .env
+   docker exec -it metamcp-postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
+   ```
+
+4. **Set up database schema**
+   ```bash
+   # Install SQLx CLI
+   cargo install sqlx-cli --no-default-features --features postgres
+
+   # Create and run migrations
+   sqlx migrate add create_api_keys
+   sqlx migrate add create_mcp_servers
+   sqlx migrate run
+   ```
+
+5. **Begin Phase 1 implementation**
+   - Core infrastructure
+   - Configuration management
+   - Database connection pool
+   - Error handling framework
+
+6. **Build CLI tool early (Phase 3)**
+   - Implement metamcp-cli for API key management
+   - Test with database operations
+   - Use CLI to create first API key for development
+
+7. **Create test components**
+   - Test client for development workflow
+   - Basic backend servers for integration testing
+   - Use CLI-generated API keys for testing
+
+### Example Workflow
+
+```bash
+# After Phase 3 is complete:
+
+# 1. Create an API key using CLI
+cargo run --bin metamcp-cli keys create --name "Dev Client"
+
+# 2. Save the API key (shown only once)
+# API Key: mcp_a1b2c3d4e5f6...
+
+# 3. Start the server
+cargo run --bin metamcp
+
+# 4. Get JWT token using API key
+curl -X POST http://localhost:12009/api/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"api_key": "mcp_a1b2c3d4e5f6..."}'
+
+# 5. Use JWT token for authenticated requests
+curl http://localhost:12009/api/v1/mcp/servers \
+  -H "Authorization: Bearer <jwt-token>"
+```
+
+## 19. Summary
+
+This migration plan outlines a **simplified, focused architecture** for MetaMCP in Rust:
+
+### Key Simplifications
+- ✅ **NO user management** - Only API keys
+- ✅ **NO OAuth/sessions** - Simple JWT from API keys
+- ✅ **NO WebSockets/SSE for clients** - Only streaming HTTP
+- ✅ **NO complex authentication** - Just API key + JWT
+
+### Core Focus
+- 🎯 **MCP protocol proxy** with streaming HTTP
+- 🎯 **Protocol translation** (HTTP ↔ SSE/stdio in future)
+- 🎯 **High performance** with Rust/Tokio
+- 🎯 **Type safety** with SQLx and strong typing
+
+### MVP Deliverables
+1. **CLI tool** for secure API key management (list, create, inactivate, delete, rotate)
+2. JWT token authentication endpoint
+3. MCP server configuration and management
+4. Streaming HTTP for client communication
+5. MCP protocol message routing
+6. Test client and backend servers
+7. OpenAPI documentation
+
+### Key Components
+
+1. **MetaMCP Server** - Main Axum-based server for MCP proxying
+2. **MetaMCP CLI** - Command-line tool for API key administration
+3. **Test Client** - Example MCP client using streaming HTTP
+4. **Backend Test Servers** - Two example MCP servers for testing
+
+The architecture is designed to be:
+- **Simple**: Minimal moving parts, clear responsibilities
+- **Secure**: API keys managed via CLI, not API endpoints
+- **Performant**: Rust + Tokio + streaming HTTP
+- **Extensible**: Easy to add SSE/stdio translation later
+- **Testable**: Test components built from the start

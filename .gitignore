@@ -19,3 +19,24 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Environment variables (secrets)
+.env
+.env.local
+.env.*.local
+
+# SQLx offline mode metadata (commit .sqlx/ for offline builds)
+# Uncomment if not using offline mode
+# .sqlx/
+
+# Database data (if running locally)
+*.db
+*.db-shm
+*.db-wal
+
+# macOS
+.DS_Store
+
+# Editor directories
+.vscode/
+.idea/
