@@ -15,6 +15,28 @@ path = "src/main.rs"
 name = "metamcp-cli"
 path = "src/bin/metamcp-cli.rs"
 
+# Examples
+[[example]]
+name = "test_client"
+path = "examples/test_client.rs"
+
+[[example]]
+name = "backend_server_1"
+path = "examples/backend_server_1.rs"
+
+[[example]]
+name = "backend_server_2"
+path = "examples/backend_server_2.rs"
+
+# Benchmarks
+[[bench]]
+name = "auth_bench"
+harness = false
+
+[[bench]]
+name = "streaming_bench"
+harness = false
+
 [dependencies]
 # Web Framework
 axum = { version = "0.8", features = ["http2"] }
