@@ -1,0 +1,111 @@
+[package]
+name = "metamcp"
+version = "0.1.0"
+edition = "2021"
+authors = ["MetaMCP Team"]
+description = "MetaMCP - MCP Protocol Proxy Server"
+license = "MIT"
+repository = "https://github.com/azharmgh/metamcp_rust"
+
+[[bin]]
+name = "metamcp"
+path = "src/main.rs"
+
+[[bin]]
+name = "metamcp-cli"
+path = "src/bin/metamcp-cli.rs"
+
+# Examples
+[[example]]
+name = "test_client"
+path = "examples/test_client.rs"
+
+[[example]]
+name = "backend_server_1"
+path = "examples/backend_server_1.rs"
+
+[[example]]
+name = "backend_server_2"
+path = "examples/backend_server_2.rs"
+
+# Benchmarks
+[[bench]]
+name = "auth_bench"
+harness = false
+
+[[bench]]
+name = "streaming_bench"
+harness = false
+
+[dependencies]
+# Web Framework
+axum = { version = "0.8", features = ["http2"] }
+axum-extra = { version = "0.12", features = ["typed-header"] }
+
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Streaming
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Database - SQLx
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "uuid", "chrono", "migrate"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Authentication (API Key + JWT only)
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+
+# Tower middleware
+tower = "0.5"
+tower-http = { version = "0.6", features = ["auth", "cors", "trace"] }
+
+# Error Handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging & Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Configuration
+dotenvy = "0.15"
+
+# UUID and Time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP Client (for backend MCP servers)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Validation
+validator = { version = "0.20", features = ["derive"] }
+
+# OpenAPI/REST API Documentation
+utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+# CLI Tool
+clap = { version = "4", features = ["derive"] }
+
+# Hex encoding for encryption keys
+hex = "0.4"
+
+# Async traits
+async-trait = "0.1"
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+wiremock = "0.6"
+criterion = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
