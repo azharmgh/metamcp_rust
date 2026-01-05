@@ -6,7 +6,12 @@ pub mod routes;
 
 use crate::auth::AuthService;
 use crate::db::Database;
-use axum::Router;
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Json},
+    Router,
+};
+use serde_json::json;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -67,6 +72,17 @@ pub struct AppState {
 )]
 pub struct ApiDoc;
 
+/// Fallback handler for 404 errors - returns JSON response
+async fn fallback_handler() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "not_found",
+            "error_description": "The requested endpoint does not exist"
+        })),
+    )
+}
+
 /// Create the API router with all routes
 pub fn create_router(state: AppState) -> Router {
     // CORS configuration
@@ -84,6 +100,8 @@ pub fn create_router(state: AppState) -> Router {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         // Add state
         .with_state(state)
+        // Fallback for unmatched routes (returns JSON 404)
+        .fallback(fallback_handler)
         // Add middleware
         .layer(TraceLayer::new_for_http())
         .layer(cors)

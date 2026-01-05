@@ -7,9 +7,22 @@ use axum::{
     extract::State,
     http::{header::AUTHORIZATION, Request, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Json, Response},
 };
+use serde_json::json;
 use std::sync::Arc;
+
+/// JSON error response for authentication failures
+fn auth_error_response(message: &str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "error": "unauthorized",
+            "error_description": message
+        })),
+    )
+        .into_response()
+}
 
 /// Extract Bearer token from Authorization header
 fn extract_bearer_token(request: &Request<Body>) -> Option<&str> {
@@ -25,21 +38,24 @@ pub async fn auth_middleware(
     State(auth): State<Arc<AuthService>>,
     mut request: Request<Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
-    let token = extract_bearer_token(&request).ok_or_else(|| {
-        tracing::warn!("Missing authorization header");
-        StatusCode::UNAUTHORIZED
-    })?;
+) -> Response {
+    let token = match extract_bearer_token(&request) {
+        Some(t) => t,
+        None => {
+            tracing::warn!("Missing authorization header");
+            return auth_error_response("Missing or invalid Authorization header");
+        }
+    };
 
     match auth.validate_token(token).await {
         Ok(claims) => {
             // Attach claims to request extensions for handlers to use
             request.extensions_mut().insert(claims);
-            Ok(next.run(request).await)
+            next.run(request).await
         }
         Err(e) => {
             tracing::warn!("Authentication failed: {}", e);
-            Err(StatusCode::UNAUTHORIZED)
+            auth_error_response("Invalid or expired token")
         }
     }
 }

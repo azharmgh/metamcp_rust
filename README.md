@@ -116,6 +116,157 @@ metamcp-cli keys delete <key-id> --confirm
 metamcp-cli keys rotate <key-id>
 ```
 
+## End-to-End Usage with Claude CLI
+
+MetaMCP acts as a gateway that aggregates multiple MCP servers, allowing Claude CLI to access all tools through a single endpoint.
+
+### Step 1: Start the Services
+
+```bash
+# Terminal 1: Start PostgreSQL
+docker-compose up -d postgres
+
+# Terminal 2: Start MetaMCP server
+cargo run --bin metamcp
+
+# Terminal 3: Start example backend server 1 (simple tools)
+cargo run --example backend_server_1 -- --port 3001
+
+# Terminal 4: Start example backend server 2 (advanced tools + resources + prompts)
+cargo run --example backend_server_2 -- --port 3002
+```
+
+### Step 2: Create API Key and Register MCP Servers
+
+```bash
+# Create an API key
+cargo run --bin metamcp-cli -- keys create --name "claude-cli"
+# Save the API key output (e.g., mcp_xxx...)
+
+# Get JWT token (note: response field is "access_token", not "token")
+TOKEN=$(curl -s -X POST http://localhost:12009/api/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"api_key": "mcp_xxx..."}' | jq -r '.access_token')
+
+# Register backend server 1 (simple tools: echo, add, uppercase, reverse, timestamp)
+curl -X POST http://localhost:12009/api/v1/mcp/servers \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "simple-tools", "url": "http://localhost:3001", "protocol": "http"}'
+
+# Register backend server 2 (advanced: file ops, base64, prompts, resources)
+curl -X POST http://localhost:12009/api/v1/mcp/servers \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "advanced-tools", "url": "http://localhost:3002", "protocol": "http"}'
+```
+
+### Step 3: Configure Claude CLI
+
+Add MetaMCP to your Claude CLI configuration (`~/.claude/claude_desktop_config.json` or similar):
+
+```json
+{
+  "mcpServers": {
+    "metamcp": {
+      "url": "http://localhost:12009/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-jwt-token>"
+      }
+    }
+  }
+}
+```
+
+Or using API key authentication:
+
+```json
+{
+  "mcpServers": {
+    "metamcp": {
+      "url": "http://localhost:12009/mcp",
+      "headers": {
+        "X-API-Key": "mcp_xxx..."
+      }
+    }
+  }
+}
+```
+
+### Step 4: Test MCP Gateway with curl
+
+Before using Claude CLI, you can verify the MCP gateway is working:
+
+```bash
+# List all available tools (aggregated from all backend servers)
+curl -X POST http://localhost:12009/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+
+# Call the 'add' tool from simple-tools server
+curl -X POST http://localhost:12009/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"simple-tools_add","arguments":{"a":5,"b":3}}}'
+
+# Call the 'echo' tool
+curl -X POST http://localhost:12009/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"simple-tools_echo","arguments":{"message":"Hello from MetaMCP!"}}}'
+
+# Call the 'base64_encode' tool from advanced-tools server
+curl -X POST http://localhost:12009/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advanced-tools_base64_encode","arguments":{"text":"Hello World"}}}'
+```
+
+**Note:** Tool names are prefixed with the server name (e.g., `simple-tools_add`) to avoid collisions between servers.
+
+### Step 5: Use with Claude CLI
+
+Once configured, Claude CLI will have access to all tools from registered MCP servers:
+
+**From Backend Server 1:**
+- `echo` - Echoes back input message
+- `add` - Adds two numbers
+- `uppercase` - Converts text to uppercase
+- `reverse` - Reverses a string
+- `timestamp` - Returns current Unix timestamp
+
+**From Backend Server 2:**
+- `read_file` - Reads from virtual file system
+- `write_file` - Writes to virtual file system
+- `list_files` - Lists all virtual files
+- `parse_json` - Parses and formats JSON
+- `base64_encode` / `base64_decode` - Base64 encoding/decoding
+- `word_count` - Counts words, characters, lines
+- `get_config` - Gets configuration values
+
+**Resources available:**
+- `config://server` - Server configuration
+- `config://all` - All configuration values
+- `file://readme.txt`, `file://config.json`, `file://notes.md` - Virtual files
+
+**Prompts available:**
+- `code_review` - Generate code review feedback
+- `summarize` - Summarize text
+- `explain` - Explain concepts
+
+### Example Session
+
+```bash
+# Start Claude CLI with MetaMCP configured
+claude
+
+# Claude can now use aggregated tools:
+# "Use the add tool to calculate 42 + 17"
+# "Read the file readme.txt from the virtual file system"
+# "Encode 'Hello World' to base64"
+```
+
 ## Testing
 
 ```bash
