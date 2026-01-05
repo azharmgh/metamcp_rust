@@ -40,3 +40,4 @@ target
 # Editor directories
 .vscode/
 .idea/
+.mcp.json

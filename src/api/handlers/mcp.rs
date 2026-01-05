@@ -1,9 +1,12 @@
 //! MCP server management handlers
+//!
+//! This module handles MCP server CRUD operations with security validations
+//! to protect against OWASP API Security Top 10 vulnerabilities.
 
 use crate::api::AppState;
 use crate::auth::AuthenticatedUser;
 use crate::db::models::{CreateMcpServerRequest, McpServerInfo, UpdateMcpServerRequest};
-use crate::utils::AppError;
+use crate::utils::{validate_url_for_ssrf, AppError};
 use axum::{
     extract::{Path, State},
     Json,
@@ -96,6 +99,9 @@ pub struct CreateMcpServerSchema {
 }
 
 /// Create a new MCP server
+///
+/// # Security
+/// - OWASP API7:2023 - SSRF Prevention: Validates URL to block internal/private addresses
 #[utoipa::path(
     post,
     path = "/api/v1/mcp/servers",
@@ -104,7 +110,8 @@ pub struct CreateMcpServerSchema {
     responses(
         (status = 201, description = "MCP server created", body = McpServerInfo),
         (status = 400, description = "Invalid request"),
-        (status = 401, description = "Unauthorized")
+        (status = 401, description = "Unauthorized"),
+        (status = 422, description = "Security violation - URL blocked")
     ),
     security(
         ("bearer_auth" = [])
@@ -115,6 +122,10 @@ pub async fn create_mcp_server(
     _user: AuthenticatedUser,
     Json(payload): Json<CreateMcpServerRequest>,
 ) -> Result<Json<McpServerInfo>, AppError> {
+    // OWASP API7:2023 - Server Side Request Forgery (SSRF) Prevention
+    // Validate URL to block localhost, private IPs, and cloud metadata endpoints
+    validate_url_for_ssrf(&payload.url)?;
+
     let server = state.db.mcp_servers().create(&payload).await?;
     Ok(Json(server.into()))
 }
@@ -139,6 +150,9 @@ pub struct UpdateMcpServerSchema {
 }
 
 /// Update an MCP server
+///
+/// # Security
+/// - OWASP API7:2023 - SSRF Prevention: Validates URL to block internal/private addresses
 #[utoipa::path(
     put,
     path = "/api/v1/mcp/servers/{server_id}",
@@ -150,7 +164,8 @@ pub struct UpdateMcpServerSchema {
     responses(
         (status = 200, description = "MCP server updated", body = McpServerInfo),
         (status = 404, description = "Server not found"),
-        (status = 401, description = "Unauthorized")
+        (status = 401, description = "Unauthorized"),
+        (status = 422, description = "Security violation - URL blocked")
     ),
     security(
         ("bearer_auth" = [])
@@ -162,6 +177,12 @@ pub async fn update_mcp_server(
     _user: AuthenticatedUser,
     Json(payload): Json<UpdateMcpServerRequest>,
 ) -> Result<Json<McpServerInfo>, AppError> {
+    // OWASP API7:2023 - Server Side Request Forgery (SSRF) Prevention
+    // If URL is being updated, validate it to block internal addresses
+    if let Some(ref url) = payload.url {
+        validate_url_for_ssrf(url)?;
+    }
+
     let server = state
         .db
         .mcp_servers()

@@ -1,4 +1,7 @@
 //! API module
+//!
+//! This module provides the REST API for MetaMCP with security hardening
+//! based on OWASP API Security Top 10 guidelines.
 
 pub mod handlers;
 pub mod middleware;
@@ -6,9 +9,14 @@ pub mod routes;
 
 use crate::auth::AuthService;
 use crate::db::Database;
-use axum::Router;
+use axum::{
+    http::{header, Method, StatusCode},
+    response::{IntoResponse, Json},
+    Router,
+};
+use serde_json::json;
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -67,13 +75,60 @@ pub struct AppState {
 )]
 pub struct ApiDoc;
 
+/// Fallback handler for 404 errors - returns JSON response
+async fn fallback_handler() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "not_found",
+            "error_description": "The requested endpoint does not exist"
+        })),
+    )
+}
+
 /// Create the API router with all routes
+///
+/// # Security
+/// This router includes several OWASP API Security Top 10 mitigations:
+/// - OWASP API8:2023 - Security headers middleware
+/// - OWASP API8:2023 - Restricted CORS configuration
+/// - OWASP API4:2023 - Rate limiting headers
 pub fn create_router(state: AppState) -> Router {
-    // CORS configuration
+    // OWASP API8:2023 - Security Misconfiguration
+    // CORS configuration - restrict to specific origins in production
+    // For development, we allow common localhost ports
+    // In production, replace with actual allowed origins
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        // OWASP API8:2023 - Restrict origins instead of allowing all (*)
+        // Allow localhost for development, add production domains as needed
+        .allow_origin([
+            "http://localhost:3000".parse().unwrap(),
+            "http://localhost:5173".parse().unwrap(),  // Vite dev server
+            "http://localhost:8080".parse().unwrap(),
+            "http://127.0.0.1:3000".parse().unwrap(),
+            "http://127.0.0.1:5173".parse().unwrap(),
+            "http://127.0.0.1:8080".parse().unwrap(),
+        ])
+        // OWASP API8:2023 - Only allow necessary HTTP methods
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        // OWASP API8:2023 - Only allow necessary headers
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::ORIGIN,
+            header::HeaderName::from_static("x-requested-with"),
+        ])
+        // Allow credentials for authenticated requests
+        .allow_credentials(true)
+        // Cache preflight requests for 1 hour
+        .max_age(std::time::Duration::from_secs(3600));
 
     Router::new()
         // Public routes
@@ -84,7 +139,14 @@ pub fn create_router(state: AppState) -> Router {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         // Add state
         .with_state(state)
-        // Add middleware
+        // Fallback for unmatched routes (returns JSON 404)
+        .fallback(fallback_handler)
+        // OWASP API8:2023 - Add security headers to all responses
+        .layer(axum::middleware::from_fn(middleware::security_headers))
+        // OWASP API4:2023 - Add rate limiting headers
+        .layer(axum::middleware::from_fn(middleware::rate_limit_headers))
+        // Add tracing
         .layer(TraceLayer::new_for_http())
+        // Add CORS
         .layer(cors)
 }

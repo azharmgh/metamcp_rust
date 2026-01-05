@@ -1,4 +1,7 @@
 //! Application error types and handling
+//!
+//! This module provides centralized error handling for the MetaMCP API,
+//! including security-related errors for OWASP compliance.
 
 use axum::{
     http::StatusCode,
@@ -8,6 +11,8 @@ use axum::{
 use serde::Serialize;
 use thiserror::Error;
 use utoipa::ToSchema;
+
+use super::security::UrlValidationError;
 
 /// Application-level errors
 #[derive(Error, Debug)]
@@ -47,6 +52,21 @@ pub enum AppError {
 
     #[error("Process error: {0}")]
     Process(String),
+
+    /// OWASP API7:2023 - Server Side Request Forgery (SSRF)
+    /// Security violation errors for blocked URLs and other security issues
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
+}
+
+/// Convert URL validation errors to AppError
+/// OWASP API7:2023 - SSRF Prevention
+impl From<UrlValidationError> for AppError {
+    fn from(err: UrlValidationError) -> Self {
+        // Log security violations for monitoring
+        tracing::warn!("OWASP API7:2023 - SSRF attempt blocked: {}", err);
+        AppError::SecurityViolation(err.to_string())
+    }
 }
 
 /// Error response body
@@ -87,6 +107,11 @@ impl IntoResponse for AppError {
             AppError::Process(msg) => {
                 tracing::error!("Process error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Process Error", None)
+            }
+            // OWASP API7:2023 - Security violations return 422 Unprocessable Entity
+            // to indicate the request was understood but cannot be processed for security reasons
+            AppError::SecurityViolation(msg) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "Security Violation", Some(msg.clone()))
             }
         };
 

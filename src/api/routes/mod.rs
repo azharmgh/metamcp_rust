@@ -10,11 +10,17 @@ pub fn public_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(handlers::health_check))
         .route("/api/v1/auth/token", post(handlers::authenticate))
+        // MCP health check endpoint (required by Claude Code's HTTP transport)
+        // Must be public as health checks may not include auth headers
+        .route("/mcp/health", get(handlers::mcp_gateway::mcp_health))
 }
 
 /// Create the protected routes (authentication required)
 pub fn protected_routes(state: AppState) -> Router<AppState> {
     Router::new()
+        // MCP Gateway endpoint (for Claude and other MCP clients)
+        // Support both GET (for SSE/info) and POST (for JSON-RPC)
+        .route("/mcp", get(handlers::mcp_gateway::mcp_gateway_sse).post(handlers::mcp_gateway))
         // MCP server management
         .route(
             "/api/v1/mcp/servers",

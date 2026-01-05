@@ -7,13 +7,14 @@ use serde_json::Value;
 pub const JSONRPC_VERSION: &str = "2.0";
 
 /// MCP Protocol version
-pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+pub const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 
-/// JSON-RPC Request
+/// JSON-RPC Request (can also be a notification if id is None)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
-    pub id: RequestId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<RequestId>,
     pub method: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
@@ -262,7 +263,7 @@ impl JsonRpcRequest {
     pub fn new(id: impl Into<RequestId>, method: &str, params: Option<Value>) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.to_string(),
-            id: id.into(),
+            id: Some(id.into()),
             method: method.to_string(),
             params,
         }
