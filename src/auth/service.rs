@@ -100,6 +100,36 @@ impl AuthService {
         Ok(claims)
     }
 
+    /// Validate an API key directly and return claims (without JWT exchange)
+    pub async fn validate_api_key(&self, api_key: &str) -> Result<Claims, AppError> {
+        let keys = self.db.api_keys().list_all(false).await?;
+
+        let mut found_key = None;
+        for key in keys {
+            if ApiKeyEncryption::verify_api_key(api_key, &key.key_hash)? {
+                found_key = Some(key);
+                break;
+            }
+        }
+
+        let stored_key =
+            found_key.ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
+
+        if !stored_key.is_active {
+            return Err(AppError::Unauthorized("API key is inactive".to_string()));
+        }
+
+        // Update last used timestamp
+        self.db.api_keys().update_last_used(stored_key.id).await?;
+
+        Ok(Claims {
+            sub: stored_key.id.to_string(),
+            exp: usize::MAX,
+            iat: chrono::Utc::now().timestamp() as usize,
+            jti: Uuid::new_v4().to_string(),
+        })
+    }
+
     /// Revoke an API key
     pub async fn revoke_api_key(&self, key_id: Uuid) -> Result<(), AppError> {
         self.db.api_keys().set_inactive(key_id).await

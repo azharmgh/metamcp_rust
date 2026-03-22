@@ -314,12 +314,15 @@ See `.env.example` for all available configuration options.
 - `DATABASE_URL`: Full connection string (must match above values)
 
 **Security:**
-- `JWT_SECRET`: Secret for signing JWT tokens (generate with `openssl rand -base64 32`)
+- `JWT_SECRET`: Secret for signing JWT tokens (generate with `openssl rand -base64 32`). Only needed if using JWT Bearer token authentication; not required for direct API key auth via `X-API-Key` header.
 - `ENCRYPTION_KEY`: Key for encrypting API keys at rest (generate with `openssl rand -hex 32`)
 
 **Server:**
 - `SERVER_HOST`: Server bind address (default: 127.0.0.1)
 - `SERVER_PORT`: Server port (default: 12009)
+
+**URL Validation:**
+- `ALLOW_LOCAL_URLS`: Allow localhost and private IP URLs for MCP server registration (default: `true`). Set to `false` in production to enable SSRF protection.
 
 **Logging:**
 - `RUST_LOG`: Logging level (options: error, warn, info, debug, trace)

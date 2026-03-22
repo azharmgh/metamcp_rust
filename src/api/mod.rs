@@ -26,6 +26,7 @@ use utoipa_swagger_ui::SwaggerUi;
 pub struct AppState {
     pub db: Database,
     pub auth: Arc<AuthService>,
+    pub allow_local_urls: bool,
 }
 
 /// OpenAPI documentation
@@ -124,6 +125,7 @@ pub fn create_router(state: AppState) -> Router {
             header::ACCEPT,
             header::ORIGIN,
             header::HeaderName::from_static("x-requested-with"),
+            header::HeaderName::from_static("x-api-key"),
         ])
         // Allow credentials for authenticated requests
         .allow_credentials(true)

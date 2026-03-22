@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
     let state = api::AppState {
         db,
         auth: auth_service,
+        allow_local_urls: config.allow_local_urls,
     };
 
     // Create router

@@ -33,31 +33,54 @@ fn extract_bearer_token(request: &Request<Body>) -> Option<&str> {
         .and_then(|value| value.strip_prefix("Bearer "))
 }
 
+/// Extract API key from X-API-Key header
+fn extract_api_key(request: &Request<Body>) -> Option<&str> {
+    request
+        .headers()
+        .get("X-API-Key")
+        .and_then(|value| value.to_str().ok())
+}
+
 /// Authentication middleware
+///
+/// Supports two authentication methods:
+/// 1. Bearer JWT token via `Authorization: Bearer <token>` header
+/// 2. Direct API key via `X-API-Key: <api_key>` header
 pub async fn auth_middleware(
     State(auth): State<Arc<AuthService>>,
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let token = match extract_bearer_token(&request) {
-        Some(t) => t,
-        None => {
-            tracing::warn!("Missing authorization header");
-            return auth_error_response("Missing or invalid Authorization header");
-        }
-    };
-
-    match auth.validate_token(token).await {
-        Ok(claims) => {
-            // Attach claims to request extensions for handlers to use
-            request.extensions_mut().insert(claims);
-            next.run(request).await
-        }
-        Err(e) => {
-            tracing::warn!("Authentication failed: {}", e);
-            auth_error_response("Invalid or expired token")
-        }
+    // Try Bearer JWT token first
+    if let Some(token) = extract_bearer_token(&request) {
+        return match auth.validate_token(token).await {
+            Ok(claims) => {
+                request.extensions_mut().insert(claims);
+                next.run(request).await
+            }
+            Err(e) => {
+                tracing::warn!("JWT authentication failed: {}", e);
+                auth_error_response("Invalid or expired token")
+            }
+        };
     }
+
+    // Fall back to direct API key authentication
+    if let Some(api_key) = extract_api_key(&request) {
+        return match auth.validate_api_key(api_key).await {
+            Ok(claims) => {
+                request.extensions_mut().insert(claims);
+                next.run(request).await
+            }
+            Err(e) => {
+                tracing::warn!("API key authentication failed: {}", e);
+                auth_error_response("Invalid or inactive API key")
+            }
+        };
+    }
+
+    tracing::warn!("Missing authentication credentials");
+    auth_error_response("Missing Authorization header or X-API-Key header")
 }
 
 /// Extract claims from request extensions
