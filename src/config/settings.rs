@@ -23,6 +23,9 @@ pub struct Config {
 
     /// Log level
     pub log_level: String,
+
+    /// Allow localhost and private IP URLs (for local development)
+    pub allow_local_urls: bool,
 }
 
 impl Config {
@@ -55,6 +58,10 @@ impl Config {
 
         let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info,metamcp=debug".to_string());
 
+        let allow_local_urls = env::var("ALLOW_LOCAL_URLS")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(true);
+
         Ok(Self {
             database_url,
             jwt_secret,
@@ -62,6 +69,7 @@ impl Config {
             server_host,
             server_port,
             log_level,
+            allow_local_urls,
         })
     }
 

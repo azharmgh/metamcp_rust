@@ -124,7 +124,10 @@ pub async fn create_mcp_server(
 ) -> Result<Json<McpServerInfo>, AppError> {
     // OWASP API7:2023 - Server Side Request Forgery (SSRF) Prevention
     // Validate URL to block localhost, private IPs, and cloud metadata endpoints
-    validate_url_for_ssrf(&payload.url)?;
+    // Skip validation when local URLs are allowed (development mode)
+    if !state.allow_local_urls {
+        validate_url_for_ssrf(&payload.url)?;
+    }
 
     let server = state.db.mcp_servers().create(&payload).await?;
     Ok(Json(server.into()))
@@ -179,8 +182,11 @@ pub async fn update_mcp_server(
 ) -> Result<Json<McpServerInfo>, AppError> {
     // OWASP API7:2023 - Server Side Request Forgery (SSRF) Prevention
     // If URL is being updated, validate it to block internal addresses
-    if let Some(ref url) = payload.url {
-        validate_url_for_ssrf(url)?;
+    // Skip validation when local URLs are allowed (development mode)
+    if !state.allow_local_urls {
+        if let Some(ref url) = payload.url {
+            validate_url_for_ssrf(url)?;
+        }
     }
 
     let server = state

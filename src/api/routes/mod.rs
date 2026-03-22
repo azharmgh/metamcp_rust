@@ -20,7 +20,9 @@ pub fn protected_routes(state: AppState) -> Router<AppState> {
     Router::new()
         // MCP Gateway endpoint (for Claude and other MCP clients)
         // Support both GET (for SSE/info) and POST (for JSON-RPC)
+        // Register both with and without trailing slash for client compatibility
         .route("/mcp", get(handlers::mcp_gateway::mcp_gateway_sse).post(handlers::mcp_gateway))
+        .route("/mcp/", get(handlers::mcp_gateway::mcp_gateway_sse).post(handlers::mcp_gateway))
         // MCP server management
         .route(
             "/api/v1/mcp/servers",

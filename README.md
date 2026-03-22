@@ -7,7 +7,7 @@ This repo and the code is created with Anthropic Claude Code AI assistant.
 ## Features
 
 - 🦀 **Pure Rust** - High performance, type-safe backend with Axum
-- 🔐 **API Key Authentication** - Secure API keys with JWT tokens (no user management)
+- 🔐 **Flexible Authentication** - Direct API key (`X-API-Key`) or JWT Bearer token (no user management)
 - 📡 **MCP Protocol** - Full Model Context Protocol support (tools, resources, prompts)
 - 🐘 **PostgreSQL** - Reliable data persistence with SQLx (compile-time checked)
 - 🔧 **CLI Tool** - Dedicated CLI for API key management
@@ -82,11 +82,30 @@ cargo run --bin metamcp-cli -- keys list
 
 ### Authentication
 
+All protected endpoints support two authentication methods:
+
+**Option 1: Direct API Key (recommended)**
+
+Pass your API key in the `X-API-Key` header — no token exchange needed:
+
+```bash
+curl http://localhost:12009/api/v1/mcp/servers \
+  -H "X-API-Key: mcp_your_api_key_here"
+```
+
+**Option 2: JWT Bearer Token**
+
+Exchange your API key for a short-lived JWT token, then use the token:
+
 ```bash
 # Get JWT token from API key
 curl -X POST http://localhost:12009/api/v1/auth/token \
   -H "Content-Type: application/json" \
   -d '{"api_key": "mcp_your_api_key_here"}'
+
+# Use the token
+curl http://localhost:12009/api/v1/mcp/servers \
+  -H "Authorization: Bearer <jwt_token>"
 ```
 
 ### MCP Server Management
@@ -94,11 +113,11 @@ curl -X POST http://localhost:12009/api/v1/auth/token \
 ```bash
 # List MCP servers
 curl http://localhost:12009/api/v1/mcp/servers \
-  -H "Authorization: Bearer <jwt_token>"
+  -H "X-API-Key: mcp_your_api_key_here"
 
 # Create MCP server
 curl -X POST http://localhost:12009/api/v1/mcp/servers \
-  -H "Authorization: Bearer <jwt_token>" \
+  -H "X-API-Key: mcp_your_api_key_here" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-server", "url": "http://localhost:3001", "protocol": "http"}'
 ```
@@ -143,20 +162,15 @@ cargo run --example backend_server_2 -- --port 3002
 cargo run --bin metamcp-cli -- keys create --name "claude-cli"
 # Save the API key output (e.g., mcp_xxx...)
 
-# Get JWT token (note: response field is "access_token", not "token")
-TOKEN=$(curl -s -X POST http://localhost:12009/api/v1/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"api_key": "mcp_xxx..."}' | jq -r '.access_token')
-
 # Register backend server 1 (simple tools: echo, add, uppercase, reverse, timestamp)
 curl -X POST http://localhost:12009/api/v1/mcp/servers \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-API-Key: mcp_xxx..." \
   -H "Content-Type: application/json" \
   -d '{"name": "simple-tools", "url": "http://localhost:3001", "protocol": "http"}'
 
 # Register backend server 2 (advanced: file ops, base64, prompts, resources)
 curl -X POST http://localhost:12009/api/v1/mcp/servers \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-API-Key: mcp_xxx..." \
   -H "Content-Type: application/json" \
   -d '{"name": "advanced-tools", "url": "http://localhost:3002", "protocol": "http"}'
 ```
@@ -171,14 +185,14 @@ Add MetaMCP to your Claude CLI configuration (`~/.claude/claude_desktop_config.j
     "metamcp": {
       "url": "http://localhost:12009/mcp",
       "headers": {
-        "Authorization": "Bearer <your-jwt-token>"
+        "X-API-Key": "mcp_xxx..."
       }
     }
   }
 }
 ```
 
-Or using API key authentication:
+Or using a JWT Bearer token:
 
 ```json
 {
@@ -186,7 +200,7 @@ Or using API key authentication:
     "metamcp": {
       "url": "http://localhost:12009/mcp",
       "headers": {
-        "X-API-Key": "mcp_xxx..."
+        "Authorization": "Bearer <your-jwt-token>"
       }
     }
   }
@@ -200,25 +214,25 @@ Before using Claude CLI, you can verify the MCP gateway is working:
 ```bash
 # List all available tools (aggregated from all backend servers)
 curl -X POST http://localhost:12009/mcp \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-API-Key: mcp_xxx..." \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
 # Call the 'add' tool from simple-tools server
 curl -X POST http://localhost:12009/mcp \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-API-Key: mcp_xxx..." \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"simple-tools_add","arguments":{"a":5,"b":3}}}'
 
 # Call the 'echo' tool
 curl -X POST http://localhost:12009/mcp \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-API-Key: mcp_xxx..." \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"simple-tools_echo","arguments":{"message":"Hello from MetaMCP!"}}}'
 
 # Call the 'base64_encode' tool from advanced-tools server
 curl -X POST http://localhost:12009/mcp \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "X-API-Key: mcp_xxx..." \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advanced-tools_base64_encode","arguments":{"text":"Hello World"}}}'
 ```
@@ -315,7 +329,7 @@ metamcp_rust/
 
 - **Framework**: Axum (async, type-safe web framework)
 - **Database**: PostgreSQL with SQLx (compile-time checked queries)
-- **Authentication**: API Key + JWT (stateless, no sessions)
+- **Authentication**: API Key (direct) or JWT Bearer token (stateless, no sessions)
 - **MCP Protocol**: Native Rust implementation (JSON-RPC 2.0)
 - **API Docs**: OpenAPI 3.0 with Swagger UI
 
