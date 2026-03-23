@@ -88,7 +88,10 @@ impl McpServerManager {
 
         // Spawn the process
         let mut child = cmd.spawn().map_err(|e| {
-            AppError::Process(format!("Failed to spawn MCP server '{}': {}", config.name, e))
+            AppError::Process(format!(
+                "Failed to spawn MCP server '{}': {}",
+                config.name, e
+            ))
         })?;
 
         // Set up stderr logging
@@ -249,8 +252,10 @@ impl McpServerManager {
             for (id, handle) in servers.iter_mut() {
                 if let Some(ref mut child) = handle.child {
                     if let Ok(Some(status)) = child.try_wait() {
-                        handle.status =
-                            ServerStatus::Failed(format!("Process exited with status: {:?}", status));
+                        handle.status = ServerStatus::Failed(format!(
+                            "Process exited with status: {:?}",
+                            status
+                        ));
                         tracing::error!(server_id = %id, status = ?status, "MCP server crashed");
                     }
                 }

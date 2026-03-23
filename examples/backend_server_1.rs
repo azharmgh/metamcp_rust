@@ -14,11 +14,7 @@
 //!
 //! The server will listen on http://localhost:3001
 
-use axum::{
-    extract::State,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -36,6 +32,7 @@ const SERVER_VERSION: &str = "1.0.0";
 
 /// JSON-RPC Request
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JsonRpcRequest {
     jsonrpc: String,
     id: Value,
@@ -99,6 +96,7 @@ struct Tool {
 
 /// Content item for tool results
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct TextContent {
     #[serde(rename = "type")]
     content_type: String,
@@ -307,10 +305,7 @@ async fn handle_rpc(
         }
         "tools/call" => {
             let params = request.params.unwrap_or(json!({}));
-            let tool_name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             match execute_tool(tool_name, &arguments) {

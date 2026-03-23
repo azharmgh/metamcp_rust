@@ -81,14 +81,22 @@ pub struct ErrorResponse {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_message, details) = match &self {
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "Unauthorized", Some(msg.clone())),
+            AppError::Unauthorized(msg) => {
+                (StatusCode::UNAUTHORIZED, "Unauthorized", Some(msg.clone()))
+            }
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "Forbidden", Some(msg.clone())),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "Not Found", Some(msg.clone())),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "Bad Request", Some(msg.clone())),
+            AppError::BadRequest(msg) => {
+                (StatusCode::BAD_REQUEST, "Bad Request", Some(msg.clone()))
+            }
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "Conflict", Some(msg.clone())),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error", None)
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal Server Error",
+                    None,
+                )
             }
             AppError::Database(err) => {
                 tracing::error!("Database error: {}", err);
@@ -96,23 +104,41 @@ impl IntoResponse for AppError {
             }
             AppError::Jwt(err) => {
                 tracing::warn!("JWT error: {}", err);
-                (StatusCode::UNAUTHORIZED, "Invalid Token", Some(err.to_string()))
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "Invalid Token",
+                    Some(err.to_string()),
+                )
             }
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, "Validation Error", Some(msg.clone())),
+            AppError::Validation(msg) => (
+                StatusCode::BAD_REQUEST,
+                "Validation Error",
+                Some(msg.clone()),
+            ),
             AppError::Config(msg) => {
                 tracing::error!("Configuration error: {}", msg);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Configuration Error", None)
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Configuration Error",
+                    None,
+                )
             }
-            AppError::McpProtocol(msg) => (StatusCode::BAD_REQUEST, "MCP Protocol Error", Some(msg.clone())),
+            AppError::McpProtocol(msg) => (
+                StatusCode::BAD_REQUEST,
+                "MCP Protocol Error",
+                Some(msg.clone()),
+            ),
             AppError::Process(msg) => {
                 tracing::error!("Process error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Process Error", None)
             }
             // OWASP API7:2023 - Security violations return 422 Unprocessable Entity
             // to indicate the request was understood but cannot be processed for security reasons
-            AppError::SecurityViolation(msg) => {
-                (StatusCode::UNPROCESSABLE_ENTITY, "Security Violation", Some(msg.clone()))
-            }
+            AppError::SecurityViolation(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Security Violation",
+                Some(msg.clone()),
+            ),
         };
 
         let body = ErrorResponse {

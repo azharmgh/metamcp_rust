@@ -30,10 +30,7 @@ use axum::{
 /// let app = Router::new()
 ///     .layer(middleware::from_fn(security_headers));
 /// ```
-pub async fn security_headers(
-    request: Request<Body>,
-    next: Next,
-) -> Response<Body> {
+pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -115,10 +112,7 @@ pub async fn security_headers(
 /// - X-RateLimit-Limit: Maximum requests per window
 /// - X-RateLimit-Remaining: Remaining requests in current window
 /// - X-RateLimit-Reset: Unix timestamp when the window resets
-pub async fn rate_limit_headers(
-    request: Request<Body>,
-    next: Next,
-) -> Response<Body> {
+pub async fn rate_limit_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -176,10 +170,7 @@ mod tests {
             response.headers().get("x-content-type-options").unwrap(),
             "nosniff"
         );
-        assert_eq!(
-            response.headers().get("x-frame-options").unwrap(),
-            "DENY"
-        );
+        assert_eq!(response.headers().get("x-frame-options").unwrap(), "DENY");
         assert_eq!(
             response.headers().get("x-xss-protection").unwrap(),
             "1; mode=block"

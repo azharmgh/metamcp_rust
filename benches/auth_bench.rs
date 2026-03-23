@@ -1,8 +1,8 @@
 //! Benchmarks for authentication operations
 
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use metamcp::auth::{ApiKeyEncryption, JwtService};
 use std::hint::black_box;
-use metamcp::auth::{JwtService, ApiKeyEncryption};
 use uuid::Uuid;
 
 /// Benchmark JWT token generation
@@ -11,9 +11,7 @@ fn bench_jwt_generation(c: &mut Criterion) {
     let api_key_id = Uuid::new_v4();
 
     c.bench_function("jwt_generate_token", |b| {
-        b.iter(|| {
-            service.generate_token(black_box(api_key_id)).unwrap()
-        })
+        b.iter(|| service.generate_token(black_box(api_key_id)).unwrap())
     });
 }
 
@@ -24,9 +22,7 @@ fn bench_jwt_validation(c: &mut Criterion) {
     let token = service.generate_token(api_key_id).unwrap();
 
     c.bench_function("jwt_validate_token", |b| {
-        b.iter(|| {
-            service.validate_token(black_box(&token)).unwrap()
-        })
+        b.iter(|| service.validate_token(black_box(&token)).unwrap())
     });
 }
 
@@ -46,9 +42,7 @@ fn bench_jwt_roundtrip(c: &mut Criterion) {
 /// Benchmark API key generation
 fn bench_api_key_generation(c: &mut Criterion) {
     c.bench_function("api_key_generate", |b| {
-        b.iter(|| {
-            ApiKeyEncryption::generate_api_key()
-        })
+        b.iter(ApiKeyEncryption::generate_api_key)
     });
 }
 
@@ -57,9 +51,7 @@ fn bench_api_key_hashing(c: &mut Criterion) {
     let api_key = "mcp_benchmark_test_key_12345678901234567890";
 
     c.bench_function("api_key_hash", |b| {
-        b.iter(|| {
-            ApiKeyEncryption::hash_api_key(black_box(api_key)).unwrap()
-        })
+        b.iter(|| ApiKeyEncryption::hash_api_key(black_box(api_key)).unwrap())
     });
 }
 
@@ -70,9 +62,7 @@ fn bench_api_key_encryption(c: &mut Criterion) {
     let api_key = "mcp_benchmark_test_key_12345678901234567890";
 
     c.bench_function("api_key_encrypt", |b| {
-        b.iter(|| {
-            encryption.encrypt(black_box(api_key)).unwrap()
-        })
+        b.iter(|| encryption.encrypt(black_box(api_key)).unwrap())
     });
 }
 
@@ -84,9 +74,7 @@ fn bench_api_key_decryption(c: &mut Criterion) {
     let encrypted = encryption.encrypt(api_key).unwrap();
 
     c.bench_function("api_key_decrypt", |b| {
-        b.iter(|| {
-            encryption.decrypt(black_box(&encrypted)).unwrap()
-        })
+        b.iter(|| encryption.decrypt(black_box(&encrypted)).unwrap())
     });
 }
 

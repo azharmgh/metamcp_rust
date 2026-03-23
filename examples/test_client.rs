@@ -34,6 +34,7 @@ struct AuthResponse {
 
 /// MCP Server info
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct McpServerInfo {
     id: String,
     name: String,
@@ -192,7 +193,11 @@ impl TestClient {
     }
 
     /// Get an MCP server by ID
-    async fn get_server(&self, server_id: &str) -> Result<McpServerInfo, Box<dyn std::error::Error>> {
+    #[allow(dead_code)]
+    async fn get_server(
+        &self,
+        server_id: &str,
+    ) -> Result<McpServerInfo, Box<dyn std::error::Error>> {
         let url = format!("{}/api/v1/mcp/servers/{}", self.base_url, server_id);
         let response = self
             .http_client
@@ -265,7 +270,8 @@ impl TestClient {
 fn parse_args() -> (String, String) {
     let args: Vec<String> = std::env::args().collect();
     let mut api_key = std::env::var("METAMCP_API_KEY").ok();
-    let mut server_url = std::env::var("METAMCP_URL").unwrap_or_else(|_| DEFAULT_SERVER_URL.to_string());
+    let mut server_url =
+        std::env::var("METAMCP_URL").unwrap_or_else(|_| DEFAULT_SERVER_URL.to_string());
 
     let mut i = 1;
     while i < args.len() {
@@ -289,7 +295,10 @@ fn parse_args() -> (String, String) {
                 println!();
                 println!("Options:");
                 println!("  -k, --api-key <KEY>  API key for authentication");
-                println!("  -u, --url <URL>      MetaMCP server URL (default: {})", DEFAULT_SERVER_URL);
+                println!(
+                    "  -u, --url <URL>      MetaMCP server URL (default: {})",
+                    DEFAULT_SERVER_URL
+                );
                 println!("  -h, --help           Show this help message");
                 println!();
                 println!("Environment variables:");
@@ -364,7 +373,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server.name,
                 server.id,
                 server.url,
-                if server.is_active { "active" } else { "inactive" }
+                if server.is_active {
+                    "active"
+                } else {
+                    "inactive"
+                }
             );
         }
     }
@@ -374,11 +387,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[4/6] Create Test Server");
     println!("-------------------------------------------");
     let test_server = client
-        .create_server(
-            "test-backend-1",
-            "http://localhost:3001",
-            "http",
-        )
+        .create_server("test-backend-1", "http://localhost:3001", "http")
         .await?;
     println!("  Created: {} ({})", test_server.name, test_server.id);
     println!();

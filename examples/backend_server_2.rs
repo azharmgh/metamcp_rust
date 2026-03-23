@@ -12,11 +12,7 @@
 //!
 //! The server will listen on http://localhost:3002
 
-use axum::{
-    extract::State,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -36,6 +32,7 @@ const SERVER_VERSION: &str = "1.0.0";
 
 /// JSON-RPC Request
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JsonRpcRequest {
     jsonrpc: String,
     id: Value,
@@ -137,7 +134,8 @@ impl ServerState {
         let mut virtual_files = HashMap::new();
         virtual_files.insert(
             "readme.txt".to_string(),
-            "Welcome to Backend Server #2!\n\nThis is a virtual file system for testing.".to_string(),
+            "Welcome to Backend Server #2!\n\nThis is a virtual file system for testing."
+                .to_string(),
         );
         virtual_files.insert(
             "config.json".to_string(),
@@ -375,7 +373,11 @@ fn get_prompts() -> Vec<Prompt> {
 }
 
 /// Execute a tool
-async fn execute_tool(state: &Arc<ServerState>, name: &str, arguments: &Value) -> Result<Value, String> {
+async fn execute_tool(
+    state: &Arc<ServerState>,
+    name: &str,
+    arguments: &Value,
+) -> Result<Value, String> {
     match name {
         "read_file" => {
             let path = arguments
@@ -541,8 +543,7 @@ async fn read_resource(state: &Arc<ServerState>, uri: &str) -> Result<Value, Str
         }));
     }
 
-    if uri.starts_with("file://") {
-        let path = &uri[7..];
+    if let Some(path) = uri.strip_prefix("file://") {
         let files = state.virtual_files.read().await;
 
         match files.get(path) {
@@ -709,7 +710,9 @@ fn base64_decode(encoded: &str) -> Result<String, &'static str> {
     let mut bits = 0;
 
     for c in encoded.bytes() {
-        let value = ALPHABET.iter().position(|&x| x == c)
+        let value = ALPHABET
+            .iter()
+            .position(|&x| x == c)
             .ok_or("Invalid base64 character")? as u32;
         buffer = (buffer << 6) | value;
         bits += 6;
@@ -735,43 +738,36 @@ async fn handle_rpc(
     );
 
     let response = match request.method.as_str() {
-        "initialize" => {
-            JsonRpcResponse::success(
-                request.id,
-                json!({
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": {
-                        "tools": {
-                            "listChanged": false
-                        },
-                        "resources": {
-                            "subscribe": false,
-                            "listChanged": false
-                        },
-                        "prompts": {
-                            "listChanged": false
-                        }
+        "initialize" => JsonRpcResponse::success(
+            request.id,
+            json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {
+                        "listChanged": false
                     },
-                    "serverInfo": {
-                        "name": state.name,
-                        "version": state.version
+                    "resources": {
+                        "subscribe": false,
+                        "listChanged": false
+                    },
+                    "prompts": {
+                        "listChanged": false
                     }
-                }),
-            )
-        }
-        "initialized" => {
-            JsonRpcResponse::success(request.id, json!({}))
-        }
+                },
+                "serverInfo": {
+                    "name": state.name,
+                    "version": state.version
+                }
+            }),
+        ),
+        "initialized" => JsonRpcResponse::success(request.id, json!({})),
         "tools/list" => {
             let tools = get_tools();
             JsonRpcResponse::success(request.id, json!({ "tools": tools }))
         }
         "tools/call" => {
             let params = request.params.unwrap_or(json!({}));
-            let tool_name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             match execute_tool(&state, tool_name, &arguments).await {
@@ -785,10 +781,7 @@ async fn handle_rpc(
         }
         "resources/read" => {
             let params = request.params.unwrap_or(json!({}));
-            let uri = params
-                .get("uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
 
             match read_resource(&state, uri).await {
                 Ok(result) => JsonRpcResponse::success(request.id, result),
@@ -801,10 +794,7 @@ async fn handle_rpc(
         }
         "prompts/get" => {
             let params = request.params.unwrap_or(json!({}));
-            let name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             match get_prompt(name, &arguments) {

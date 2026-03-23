@@ -83,11 +83,6 @@ pub async fn auth_middleware(
     auth_error_response("Missing Authorization header or X-API-Key header")
 }
 
-/// Extract claims from request extensions
-pub fn get_claims(request: &Request<Body>) -> Option<&Claims> {
-    request.extensions().get::<Claims>()
-}
-
 /// Extractor for claims in handlers
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser {
