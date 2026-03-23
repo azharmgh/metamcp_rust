@@ -124,6 +124,25 @@ EOF
 --label "bug"        # Add labels
 ```
 
+**Example:**
+```bash
+gh pr create --base main --head develop --title "Fix CI failures and add auth, config improvements" --body "$(cat <<'EOF'
+   ## Summary
+   - Fix all CI workflow failures: formatting (`cargo fmt`), clippy warnings, and a broken test assertion in `test_cloud_metadata_blocked`
+   - Add direct API key authentication, local URL configuration, and trailing slash support
+   - Add GitHub Actions CI workflow with format, clippy, build, and test jobs
+   - Add GitHub workflow and gh CLI learning guide
+
+   ## Test plan
+   - [ ] Verify CI pipeline passes (format, clippy, build, test jobs)
+   - [ ] Verify API key auth works with direct header and JWT flows
+   - [ ] Verify trailing slash handling on API routes
+
+   🤖 Generated with [Claude Code](https://claude.com/claude-code)
+   EOF
+   )"
+```
+
 ### List PRs
 
 ```bash
@@ -311,4 +330,12 @@ gh run view {run_id} --log-failed
 
 # 3. Re-run failed jobs
 gh run rerun {run_id} --failed
+```
+
+
+# Miscellaneous #
+
+```bash
+ git fetch origin main && git merge origin/main --no-commit 2>&1  
+ 
 ```
