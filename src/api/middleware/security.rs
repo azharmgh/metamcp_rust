@@ -27,7 +27,7 @@ use axum::{
 /// use axum::{Router, middleware};
 /// use metamcp::api::middleware::security_headers;
 ///
-/// let app = Router::new()
+/// let app: Router<()> = Router::new()
 ///     .layer(middleware::from_fn(security_headers));
 /// ```
 pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
