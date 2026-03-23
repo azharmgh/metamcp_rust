@@ -60,7 +60,8 @@ impl AuthService {
             }
         }
 
-        let stored_key = found_key.ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
+        let stored_key =
+            found_key.ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
 
         if !stored_key.is_active {
             return Err(AppError::Unauthorized("API key is inactive".to_string()));
@@ -94,7 +95,9 @@ impl AuthService {
             .ok_or_else(|| AppError::Unauthorized("API key not found".to_string()))?;
 
         if !api_key.is_active {
-            return Err(AppError::Unauthorized("API key has been revoked".to_string()));
+            return Err(AppError::Unauthorized(
+                "API key has been revoked".to_string(),
+            ));
         }
 
         Ok(claims)

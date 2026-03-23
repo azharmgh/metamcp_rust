@@ -104,7 +104,7 @@ pub fn create_router(state: AppState) -> Router {
         // Allow localhost for development, add production domains as needed
         .allow_origin([
             "http://localhost:3000".parse().unwrap(),
-            "http://localhost:5173".parse().unwrap(),  // Vite dev server
+            "http://localhost:5173".parse().unwrap(), // Vite dev server
             "http://localhost:8080".parse().unwrap(),
             "http://127.0.0.1:3000".parse().unwrap(),
             "http://127.0.0.1:5173".parse().unwrap(),

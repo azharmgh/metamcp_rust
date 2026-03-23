@@ -66,8 +66,8 @@ pub enum UrlValidationError {
 /// ```
 pub fn validate_url_for_ssrf(url_str: &str) -> Result<(), UrlValidationError> {
     // Parse URL
-    let url = url::Url::parse(url_str)
-        .map_err(|e| UrlValidationError::InvalidUrl(e.to_string()))?;
+    let url =
+        url::Url::parse(url_str).map_err(|e| UrlValidationError::InvalidUrl(e.to_string()))?;
 
     // OWASP API7:2023 - Validate scheme (only allow http/https)
     let scheme = url.scheme();
@@ -76,7 +76,8 @@ pub fn validate_url_for_ssrf(url_str: &str) -> Result<(), UrlValidationError> {
     }
 
     // Get host
-    let host = url.host_str()
+    let host = url
+        .host_str()
         .ok_or_else(|| UrlValidationError::InvalidUrl("No host in URL".to_string()))?;
 
     // OWASP API7:2023 - Block localhost variants
@@ -126,13 +127,11 @@ fn is_localhost(host: &str) -> bool {
 fn is_cloud_metadata_endpoint(host: &str) -> bool {
     let host_lower = host.to_lowercase();
 
-    // AWS EC2 metadata
+    // AWS/Azure EC2 metadata
     host_lower == "169.254.169.254"
         // GCP metadata
         || host_lower == "metadata.google.internal"
         || host_lower == "metadata.goog"
-        // Azure metadata
-        || host_lower == "169.254.169.254"
         // Kubernetes
         || host_lower == "kubernetes.default"
         || host_lower == "kubernetes.default.svc"
@@ -334,7 +333,7 @@ mod tests {
     fn test_cloud_metadata_blocked() {
         assert!(matches!(
             validate_url_for_ssrf("http://169.254.169.254/latest/meta-data/"),
-            Err(UrlValidationError::LinkLocalBlocked)
+            Err(UrlValidationError::MetadataEndpointBlocked)
         ));
         assert!(matches!(
             validate_url_for_ssrf("http://metadata.google.internal"),

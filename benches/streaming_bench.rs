@@ -1,9 +1,9 @@
 //! Benchmarks for streaming operations
 
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
-use std::hint::black_box;
-use metamcp::streaming::{StreamManager, StreamEvent, EventFilters};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use metamcp::streaming::{EventFilters, StreamEvent, StreamManager};
 use serde_json::json;
+use std::hint::black_box;
 use tokio::runtime::Runtime;
 
 /// Create a test runtime for async benchmarks
@@ -16,7 +16,7 @@ fn create_runtime() -> Runtime {
 
 /// Benchmark stream event serialization
 fn bench_event_serialization(c: &mut Criterion) {
-    let events = vec![
+    let events = [
         StreamEvent::McpServerStarted {
             server_id: "srv-12345678".to_string(),
             name: "Test Server".to_string(),
@@ -47,7 +47,7 @@ fn bench_event_serialization(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("event_serialization");
 
-    for (i, event) in events.iter().enumerate() {
+    for event in events.iter() {
         let name = match event {
             StreamEvent::McpServerStarted { .. } => "server_started",
             StreamEvent::McpServerStopped { .. } => "server_stopped",
@@ -72,31 +72,42 @@ fn bench_event_filter_evaluation(c: &mut Criterion) {
         name: "Test Server".to_string(),
     };
 
-    let filters = vec![
+    let filters = [
         ("no_filter", EventFilters::default()),
-        ("type_filter", EventFilters {
-            event_types: Some(vec!["mcp_server_started".to_string()]),
-            server_ids: vec![],
-            include_system: false,
-        }),
-        ("server_filter", EventFilters {
-            event_types: None,
-            server_ids: vec!["srv-12345678".to_string()],
-            include_system: false,
-        }),
-        ("combined_filter", EventFilters {
-            event_types: Some(vec!["mcp_server_started".to_string()]),
-            server_ids: vec!["srv-12345678".to_string()],
-            include_system: true,
-        }),
+        (
+            "type_filter",
+            EventFilters {
+                event_types: Some(vec!["mcp_server_started".to_string()]),
+                server_ids: vec![],
+                include_system: false,
+            },
+        ),
+        (
+            "server_filter",
+            EventFilters {
+                event_types: None,
+                server_ids: vec!["srv-12345678".to_string()],
+                include_system: false,
+            },
+        ),
+        (
+            "combined_filter",
+            EventFilters {
+                event_types: Some(vec!["mcp_server_started".to_string()]),
+                server_ids: vec!["srv-12345678".to_string()],
+                include_system: true,
+            },
+        ),
     ];
 
     let mut group = c.benchmark_group("filter_evaluation");
 
     for (name, filter) in filters.iter() {
-        group.bench_with_input(BenchmarkId::new("should_send", *name), filter, |b, filter| {
-            b.iter(|| filter.should_send(black_box(&event)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("should_send", *name),
+            filter,
+            |b, filter| b.iter(|| filter.should_send(black_box(&event))),
+        );
     }
 
     group.finish();
@@ -164,23 +175,29 @@ fn bench_stream_manager_filtered_broadcast(c: &mut Criterion) {
                 let manager = StreamManager::new();
 
                 // Register clients with different filters
-                let _rx1 = manager.register_client(EventFilters {
-                    event_types: Some(vec!["mcp_server_started".to_string()]),
-                    server_ids: vec![],
-                    include_system: false,
-                }).await;
+                let _rx1 = manager
+                    .register_client(EventFilters {
+                        event_types: Some(vec!["mcp_server_started".to_string()]),
+                        server_ids: vec![],
+                        include_system: false,
+                    })
+                    .await;
 
-                let _rx2 = manager.register_client(EventFilters {
-                    event_types: None,
-                    server_ids: vec!["srv-1".to_string()],
-                    include_system: false,
-                }).await;
+                let _rx2 = manager
+                    .register_client(EventFilters {
+                        event_types: None,
+                        server_ids: vec!["srv-1".to_string()],
+                        include_system: false,
+                    })
+                    .await;
 
-                let _rx3 = manager.register_client(EventFilters {
-                    event_types: Some(vec!["mcp_server_stopped".to_string()]),
-                    server_ids: vec!["srv-2".to_string()],
-                    include_system: true,
-                }).await;
+                let _rx3 = manager
+                    .register_client(EventFilters {
+                        event_types: Some(vec!["mcp_server_stopped".to_string()]),
+                        server_ids: vec!["srv-2".to_string()],
+                        include_system: true,
+                    })
+                    .await;
 
                 // Broadcast events
                 let event1 = StreamEvent::McpServerStarted {
@@ -208,7 +225,9 @@ fn bench_stream_manager_server_registration(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let manager = StreamManager::new();
-                manager.register_server(black_box("srv-12345678".to_string())).await;
+                manager
+                    .register_server(black_box("srv-12345678".to_string()))
+                    .await;
             })
         })
     });
@@ -230,10 +249,9 @@ fn bench_stream_manager_handle_mcp_event(c: &mut Criterion) {
                     status: "success".to_string(),
                 };
 
-                manager.handle_mcp_event(
-                    black_box("srv-1".to_string()),
-                    black_box(event),
-                ).await;
+                manager
+                    .handle_mcp_event(black_box("srv-1".to_string()), black_box(event))
+                    .await;
             })
         })
     });
@@ -241,7 +259,7 @@ fn bench_stream_manager_handle_mcp_event(c: &mut Criterion) {
 
 /// Benchmark stream event deserialization
 fn bench_event_deserialization(c: &mut Criterion) {
-    let json_events = vec![
+    let json_events = [
         (
             "server_started",
             r#"{"type":"mcp_server_started","server_id":"srv-1","name":"Test"}"#,

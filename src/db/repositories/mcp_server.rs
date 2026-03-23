@@ -1,6 +1,6 @@
 //! MCP Server repository for database operations
 
-use crate::db::models::{McpServer, CreateMcpServerRequest, UpdateMcpServerRequest};
+use crate::db::models::{CreateMcpServerRequest, McpServer, UpdateMcpServerRequest};
 use crate::utils::AppResult;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -87,7 +87,11 @@ impl McpServerRepository {
     }
 
     /// Update an MCP server configuration
-    pub async fn update(&self, id: Uuid, request: &UpdateMcpServerRequest) -> AppResult<Option<McpServer>> {
+    pub async fn update(
+        &self,
+        id: Uuid,
+        request: &UpdateMcpServerRequest,
+    ) -> AppResult<Option<McpServer>> {
         // Build dynamic update query
         let mut updates = Vec::new();
         let mut param_count = 1;

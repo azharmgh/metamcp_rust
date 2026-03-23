@@ -45,9 +45,9 @@ impl Config {
         let encryption_key_bytes = hex::decode(&encryption_key_hex)
             .map_err(|_| AppError::Config("ENCRYPTION_KEY must be valid hex".to_string()))?;
 
-        let encryption_key: [u8; 32] = encryption_key_bytes
-            .try_into()
-            .map_err(|_| AppError::Config("ENCRYPTION_KEY must be 32 bytes (64 hex chars)".to_string()))?;
+        let encryption_key: [u8; 32] = encryption_key_bytes.try_into().map_err(|_| {
+            AppError::Config("ENCRYPTION_KEY must be 32 bytes (64 hex chars)".to_string())
+        })?;
 
         let server_host = env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
 

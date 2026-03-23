@@ -9,7 +9,7 @@ use crate::mcp::McpProxy;
 use crate::utils::AppError;
 use axum::{
     extract::State,
-    http::{header, HeaderMap, HeaderValue},
+    http::{HeaderMap, HeaderValue},
     response::{sse::Event, IntoResponse, Response, Sse},
     Json,
 };
@@ -33,7 +33,11 @@ pub async fn mcp_gateway(
 ) -> Result<Response, AppError> {
     let proxy = McpProxy::new();
 
-    tracing::debug!("MCP Gateway received: {} (id: {:?})", request.method, request.id);
+    tracing::debug!(
+        "MCP Gateway received: {} (id: {:?})",
+        request.method,
+        request.id
+    );
 
     // Add MCP protocol headers
     let mut headers = HeaderMap::new();
@@ -83,12 +87,16 @@ async fn handle_initialize(id: crate::mcp::protocol::RequestId) -> JsonRpcRespon
     let result = InitializeResult {
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
         capabilities: ServerCapabilities {
-            tools: Some(ToolsCapability { list_changed: false }),
+            tools: Some(ToolsCapability {
+                list_changed: false,
+            }),
             resources: Some(ResourcesCapability {
                 subscribe: false,
                 list_changed: false,
             }),
-            prompts: Some(PromptsCapability { list_changed: false }),
+            prompts: Some(PromptsCapability {
+                list_changed: false,
+            }),
         },
         server_info: ServerInfo {
             name: "metamcp".to_string(),
@@ -215,7 +223,10 @@ async fn handle_resources_list(
                     // Add server prefix to URI to avoid collisions
                     let mut resource_with_server = resource.clone();
                     if let Some(obj) = resource_with_server.as_object_mut() {
-                        let uri_opt = obj.get("uri").and_then(|u| u.as_str()).map(|s| s.to_string());
+                        let uri_opt = obj
+                            .get("uri")
+                            .and_then(|u| u.as_str())
+                            .map(|s| s.to_string());
                         if let Some(uri) = uri_opt {
                             let prefixed_uri = format!("{}:{}", server.name, uri);
                             obj.insert("uri".to_string(), json!(prefixed_uri));
@@ -315,7 +326,10 @@ async fn handle_prompts_list(
                 for prompt in prompts {
                     let mut prompt_with_server = prompt.clone();
                     if let Some(obj) = prompt_with_server.as_object_mut() {
-                        let name_opt = obj.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+                        let name_opt = obj
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string());
                         if let Some(name) = name_opt {
                             let prefixed_name = format!("{}_{}", server.name, name);
                             obj.insert("name".to_string(), json!(prefixed_name));
@@ -396,7 +410,12 @@ async fn handle_prompts_get(
         }
     }
 
-    JsonRpcResponse::error(id, -32602, &format!("Unknown prompt: {}", prompt_name), None)
+    JsonRpcResponse::error(
+        id,
+        -32602,
+        &format!("Unknown prompt: {}", prompt_name),
+        None,
+    )
 }
 
 /// Handle ping request
@@ -422,9 +441,7 @@ pub async fn mcp_health() -> Json<McpHealthResponse> {
 
 /// Handle GET requests to /mcp - returns persistent SSE stream for MCP protocol
 /// This is required by Claude Code's HTTP transport for server-to-client messages
-pub async fn mcp_gateway_sse(
-    State(_state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn mcp_gateway_sse(State(_state): State<AppState>) -> impl IntoResponse {
     // Create a persistent SSE stream that stays open
     // First send an endpoint event, then keep the connection alive with periodic pings
     let endpoint_msg = json!({
@@ -455,9 +472,12 @@ pub async fn mcp_gateway_sse(
         HeaderValue::from_static(MCP_PROTOCOL_VERSION),
     );
 
-    (headers, Sse::new(combined).keep_alive(
-        axum::response::sse::KeepAlive::new()
-            .interval(std::time::Duration::from_secs(15))
-            .text("ping"),
-    ))
+    (
+        headers,
+        Sse::new(combined).keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("ping"),
+        ),
+    )
 }

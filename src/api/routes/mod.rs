@@ -3,7 +3,11 @@
 use crate::api::handlers;
 use crate::api::AppState;
 use crate::auth::auth_middleware;
-use axum::{middleware, routing::{get, post}, Router};
+use axum::{
+    middleware,
+    routing::{get, post},
+    Router,
+};
 
 /// Create the public routes (no authentication required)
 pub fn public_routes() -> Router<AppState> {
@@ -21,8 +25,14 @@ pub fn protected_routes(state: AppState) -> Router<AppState> {
         // MCP Gateway endpoint (for Claude and other MCP clients)
         // Support both GET (for SSE/info) and POST (for JSON-RPC)
         // Register both with and without trailing slash for client compatibility
-        .route("/mcp", get(handlers::mcp_gateway::mcp_gateway_sse).post(handlers::mcp_gateway))
-        .route("/mcp/", get(handlers::mcp_gateway::mcp_gateway_sse).post(handlers::mcp_gateway))
+        .route(
+            "/mcp",
+            get(handlers::mcp_gateway::mcp_gateway_sse).post(handlers::mcp_gateway),
+        )
+        .route(
+            "/mcp/",
+            get(handlers::mcp_gateway::mcp_gateway_sse).post(handlers::mcp_gateway),
+        )
         // MCP server management
         .route(
             "/api/v1/mcp/servers",
@@ -40,5 +50,8 @@ pub fn protected_routes(state: AppState) -> Router<AppState> {
             post(handlers::execute_mcp_tool),
         )
         // Apply authentication middleware
-        .layer(middleware::from_fn_with_state(state.auth.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.auth.clone(),
+            auth_middleware,
+        ))
 }

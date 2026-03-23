@@ -7,18 +7,13 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// MCP Server protocol type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::Type)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, sqlx::Type)]
 #[sqlx(type_name = "varchar", rename_all = "lowercase")]
 pub enum McpProtocol {
+    #[default]
     Http,
     Sse,
     Stdio,
-}
-
-impl Default for McpProtocol {
-    fn default() -> Self {
-        Self::Http
-    }
 }
 
 /// MCP Server configuration stored in the database
